@@ -86,14 +86,16 @@ func (as *addrSet) contains(a basics.Address) bool {
 	return false
 }
 
-func (as *addrSet) hasTxn(stxn transactions.SignedTxnWithAD) bool {
-	return as.contains(stxn.Txn.Sender) ||
-	as.contains(stxn.Txn.Receiver) ||
-	as.contains(stxn.Txn.CloseRemainderTo) ||
-	as.contains(stxn.Txn.AssetReceiver) ||
-	as.contains(stxn.Txn.AssetCloseTo) ||
-	as.contains(stxn.Txn.AssetSender) ||
-	as.contains(stxn.Txn.FreezeAccount)
+func (as *addrSet) hasTxnAddr(stxn transactions.SignedTxnWithAD) bool {
+	if as.contains(stxn.Txn.Sender) ||
+		as.contains(stxn.Txn.Receiver) ||
+		as.contains(stxn.Txn.CloseRemainderTo) ||
+		as.contains(stxn.Txn.AssetReceiver) ||
+		as.contains(stxn.Txn.AssetCloseTo) ||
+		as.contains(stxn.Txn.AssetSender) ||
+		as.contains(stxn.Txn.FreezeAccount) {
+		return true
+	}
 	for _, appAddr := range stxn.Txn.Accounts {
 		if as.contains(appAddr) {
 			return true
@@ -110,34 +112,98 @@ type paysetDependencyGroup struct {
 
 	// paysetDependencyGroup that must execute before this one
 	dependsOn []int
+
+	// existing assets that were modified by acfg
+	assetsChanged []basics.AssetIndex
+
+	// app ids called or configured
+	appIds []basics.AppIndex
 }
 
 func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD) {
+	// TODO: record app id. everything on an app-id must be serialized in order because it might touch global state
 	pdg.paysetgroups = append(pdg.paysetgroups, txgroup)
 	for _, stxn := range txgroup {
 		pdg.addrs.addTxn(stxn)
+		if stxn.Txn.ConfigAsset != 0 {
+			// don't need to record zero ConfigAsset on asset create because nothing can use that number until it's public next round
+			alreadyThere := false
+			for _, aid := range pdg.assetsChanged {
+				if aid == stxn.Txn.ConfigAsset {
+					alreadyThere = true
+					break
+				}
+			}
+			if !alreadyThere {
+				pdg.assetsChanged = append(pdg.assetsChanged, stxn.Txn.ConfigAsset)
+			}
+		}
+		if stxn.Txn.ApplicationID != 0 {
+			alreadyThere := false
+			for _, aid := range pdg.appIds {
+				if aid == stxn.Txn.ApplicationID {
+					alreadyThere = true
+					break
+				}
+			}
+			if !alreadyThere {
+				pdg.appIds = append(pdg.appIds, stxn.Txn.ApplicationID)
+			}
+		}
 	}
 }
 
-func (pdg *paysetDependencyGroup) hasAddrsOf(txgroup []transactions.SignedTxnWithAD) {
+// return true if elements in this dependency group could interact with things in the txgroup and imply a dependency
+func (pdg *paysetDependencyGroup) mustPrecede(txgroup []transactions.SignedTxnWithAD) bool {
+	// TODO: test for asset id and app id
 	for _, stxn := range txgroup {
-		pdg.addrs.addTxn(stxn)
+		if pdg.addrs.hasTxnAddr(stxn) {
+			return true
+		}
 	}
+	return false
 }
 
 func foo(paysetgroups [][]transactions.SignedTxnWithAD) {
 	depgroups := make([]paysetDependencyGroup, 1, 10)
 	//depgroups[0].add(paysetgroups[0])
-	// TODO: AssetConfig (create or re-config) serializes with anything operating on that asset id (ConfigAsset, XferAsset, FreezeAsset)
+	// TODO: AssetConfig (create or re-config) serializes with anything operating on that asset id (ConfigAsset, XferAsset, FreezeAsset). (acfg.caid == 0) doesn't need to synchronize because practically nothing can depend on it till the next round.
 	// TODO: app call ApplicationID serializes with anything on that ApplicationID
 
 	for _, txgroup := range paysetgroups {
 		dep := -1
 		var dependsOn []int = nil
 		for i, dg := range depgroups {
-			if dg.hasAddrsOf(txgroup) {
+			if dg.mustPrecede(txgroup) {
+				if dep == -1 {
+					dep = i
+				} else if i == dep {
+				} else if len(dependsOn) == 0 {
+					dependsOn = make([]int, 2)
+					dependsOn[0] = dep
+					dependsOn[1] = i
+				} else {
+					found := false
+					for _, di := range dependsOn {
+						if di == i {
+							found = true
+							break
+						}
+					}
+					if !found {
+						dependsOn = append(dependsOn)
+					}
+				}
 			}
 		}
+
+		if dep != -1 && dependsOn == nil {
+			dependsOn = []int{dep}
+		}
+		// depends on nothing. new group.
+		npdg := paysetDependencyGroup{dependsOn: dependsOn}
+		npdg.add(txgroup)
+		depgroups = append(depgroups, npdg)
 	}
 
 }
