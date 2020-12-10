@@ -121,7 +121,6 @@ type paysetDependencyGroup struct {
 }
 
 func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD) {
-	// TODO: record app id. everything on an app-id must be serialized in order because it might touch global state
 	pdg.paysetgroups = append(pdg.paysetgroups, txgroup)
 	for _, stxn := range txgroup {
 		pdg.addrs.addTxn(stxn)
@@ -139,6 +138,7 @@ func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD) {
 			}
 		}
 		if stxn.Txn.ApplicationID != 0 {
+			// don't need to record zero ApplicationID because nothing can use it until next round
 			alreadyThere := false
 			for _, aid := range pdg.appIds {
 				if aid == stxn.Txn.ApplicationID {
@@ -155,17 +155,38 @@ func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD) {
 
 // return true if elements in this dependency group could interact with things in the txgroup and imply a dependency
 func (pdg *paysetDependencyGroup) mustPrecede(txgroup []transactions.SignedTxnWithAD) bool {
-	// TODO: test for asset id and app id
 	for _, stxn := range txgroup {
 		if pdg.addrs.hasTxnAddr(stxn) {
 			return true
+		}
+		assetId := basics.AssetIndex(0)
+		if stxn.Txn.ConfigAsset != 0 {
+			assetId = stxn.Txn.ConfigAsset
+		} else if stxn.Txn.XferAsset != 0 {
+			assetId = stxn.Txn.XferAsset
+		} else if stxn.Txn.FreezeAsset != 0 {
+			assetId = stxn.Txn.FreezeAsset
+		}
+		if assetId != 0 {
+			for _, aid := range pdg.assetsChanged {
+				if aid == stxn.Txn.ConfigAsset {
+					return true
+				}
+			}
+		}
+		if stxn.Txn.ApplicationID != 0 {
+			for _, aid := range pdg.appIds {
+				if aid == stxn.Txn.ApplicationID {
+					return true
+				}
+			}
 		}
 	}
 	return false
 }
 
-func foo(paysetgroups [][]transactions.SignedTxnWithAD) {
-	depgroups := make([]paysetDependencyGroup, 1, 10)
+func buildDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) (depgroups []paysetDependencyGroup) {
+	depgroups = make([]paysetDependencyGroup, 1, 10)
 	//depgroups[0].add(paysetgroups[0])
 	// TODO: AssetConfig (create or re-config) serializes with anything operating on that asset id (ConfigAsset, XferAsset, FreezeAsset). (acfg.caid == 0) doesn't need to synchronize because practically nothing can depend on it till the next round.
 	// TODO: app call ApplicationID serializes with anything on that ApplicationID
@@ -198,12 +219,19 @@ func foo(paysetgroups [][]transactions.SignedTxnWithAD) {
 		}
 
 		if dep != -1 && dependsOn == nil {
-			dependsOn = []int{dep}
+			// depends on one thing, append to that group
+			depgroups[dep].add(txgroup)
+		} else if dependsOn != nil {
+			// depends on several things, new group
+			npdg := paysetDependencyGroup{dependsOn: dependsOn}
+			npdg.add(txgroup)
+			depgroups = append(depgroups, npdg)
+		} else {
+			// depends on nothing. new group.
+			npdg := paysetDependencyGroup{}
+			npdg.add(txgroup)
+			depgroups = append(depgroups, npdg)
 		}
-		// depends on nothing. new group.
-		npdg := paysetDependencyGroup{dependsOn: dependsOn}
-		npdg.add(txgroup)
-		depgroups = append(depgroups, npdg)
 	}
-
+	return
 }
