@@ -18,8 +18,49 @@ package ledger
 
 import (
 	"testing"
+
+	//"github.com/stretchr/testify/require"
+
+	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/transactions"
 )
 
-func TestBuildDepGroups(t *testing.T) {
-	paysetgroups := make([][]transactions.SignedTxnWithAD, 0, 20)
+// TestBuildDepGroupsAllDepend is a simple test where all txns share a common address and become one dependency group
+func TestBuildDepGroupsAllDepend(t *testing.T) {
+	//paysetgroups := make([][]transactions.SignedTxnWithAD, 0, 20)
+	testtxns := make([]transactions.SignedTxnWithAD, 8)
+	a1 := basics.Address{}
+	a1[0] = 1
+	testtxns[0].Txn.Sender = a1
+	testtxns[1].Txn.Receiver = a1
+	testtxns[2].Txn.CloseRemainderTo = a1
+	testtxns[3].Txn.AssetReceiver = a1
+	testtxns[4].Txn.AssetCloseTo = a1
+	testtxns[5].Txn.AssetSender = a1
+	testtxns[6].Txn.FreezeAccount = a1
+	testtxns[7].Txn.Accounts = []basics.Address{a1}
+	for i := range testtxns {
+		testtxns[i].Txn.FirstValid = basics.Round(i)
+	}
+
+	txgroups := oneTxnGroups(testtxns)
+	depgroups := buildDepGroups(txgroups)
+
+	if len(depgroups) != 1 {
+		for i, dg := range depgroups {
+			t.Logf("dg[%d] len=%d", i, len(dg.paysetgroups))
+		}
+		t.Fail()
+	}
+	//require.Equal(t, 1, len(depgroups), depgroups)
+}
+
+// turn a list of txns into one-txn-groups
+func oneTxnGroups(txns []transactions.SignedTxnWithAD) (txgroups [][]transactions.SignedTxnWithAD) {
+	txgroups = make([][]transactions.SignedTxnWithAD, len(txns))
+	for i, t := range txns {
+		txgroups[i] = make([]transactions.SignedTxnWithAD, 1)
+		txgroups[i][0] = t
+	}
+	return
 }

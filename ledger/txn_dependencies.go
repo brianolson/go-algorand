@@ -186,7 +186,7 @@ func (pdg *paysetDependencyGroup) mustPrecede(txgroup []transactions.SignedTxnWi
 }
 
 func buildDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) (depgroups []paysetDependencyGroup) {
-	depgroups = make([]paysetDependencyGroup, 1, 10)
+	depgroups = make([]paysetDependencyGroup, 0, 10)
 	//depgroups[0].add(paysetgroups[0])
 	// TODO: AssetConfig (create or re-config) serializes with anything operating on that asset id (ConfigAsset, XferAsset, FreezeAsset). (acfg.caid == 0) doesn't need to synchronize because practically nothing can depend on it till the next round.
 	// TODO: app call ApplicationID serializes with anything on that ApplicationID
