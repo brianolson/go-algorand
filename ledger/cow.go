@@ -17,6 +17,8 @@
 package ledger
 
 import (
+	"sync"
+
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
@@ -46,6 +48,9 @@ type roundCowState struct {
 	commitParent *roundCowState
 	proto        config.ConsensusParams
 	mods         StateDelta
+
+	threadsafe bool
+	l          sync.RWMutex
 }
 
 // StateDelta describes the delta between a given round to the previous round
@@ -97,6 +102,10 @@ func (cb *roundCowState) getCreator(cidx basics.CreatableIndex, ctype basics.Cre
 		}
 		return basics.Address{}, false, nil
 	}
+	if cb.threadsafe {
+		cb.l.RLock()
+		defer cb.l.RUnlock()
+	}
 	return cb.lookupParent.getCreator(cidx, ctype)
 }
 
@@ -106,6 +115,10 @@ func (cb *roundCowState) lookup(addr basics.Address) (data basics.AccountData, e
 		return d.new, nil
 	}
 
+	if cb.threadsafe {
+		cb.l.RLock()
+		defer cb.l.RUnlock()
+	}
 	return cb.lookupParent.lookup(addr)
 }
 
@@ -122,10 +135,18 @@ func (cb *roundCowState) checkDup(firstValid, lastValid basics.Round, txid trans
 		}
 	}
 
+	if cb.threadsafe {
+		cb.l.RLock()
+		defer cb.l.RUnlock()
+	}
 	return cb.lookupParent.checkDup(firstValid, lastValid, txid, txl)
 }
 
 func (cb *roundCowState) txnCounter() uint64 {
+	if cb.threadsafe {
+		cb.l.RLock()
+		defer cb.l.RUnlock()
+	}
 	return cb.lookupParent.txnCounter() + uint64(len(cb.mods.Txids))
 }
 
@@ -133,14 +154,26 @@ func (cb *roundCowState) compactCertLast() basics.Round {
 	if cb.mods.compactCertSeen != 0 {
 		return cb.mods.compactCertSeen
 	}
+	if cb.threadsafe {
+		cb.l.RLock()
+		defer cb.l.RUnlock()
+	}
 	return cb.lookupParent.compactCertLast()
 }
 
 func (cb *roundCowState) blockHdr(r basics.Round) (bookkeeping.BlockHeader, error) {
+	if cb.threadsafe {
+		cb.l.RLock()
+		defer cb.l.RUnlock()
+	}
 	return cb.lookupParent.blockHdr(r)
 }
 
 func (cb *roundCowState) put(addr basics.Address, old basics.AccountData, new basics.AccountData, newCreatable *basics.CreatableLocator, deletedCreatable *basics.CreatableLocator) {
+	if cb.threadsafe {
+		cb.l.Lock()
+		defer cb.l.Unlock()
+	}
 	prev, present := cb.mods.accts[addr]
 	if present {
 		cb.mods.accts[addr] = accountDelta{old: prev.old, new: new}
@@ -166,11 +199,19 @@ func (cb *roundCowState) put(addr basics.Address, old basics.AccountData, new ba
 }
 
 func (cb *roundCowState) addTx(txn transactions.Transaction, txid transactions.Txid) {
+	if cb.threadsafe {
+		cb.l.Lock()
+		defer cb.l.Unlock()
+	}
 	cb.mods.Txids[txid] = txn.LastValid
 	cb.mods.txleases[txlease{sender: txn.Sender, lease: txn.Lease}] = txn.LastValid
 }
 
 func (cb *roundCowState) sawCompactCert(rnd basics.Round) {
+	if cb.threadsafe {
+		cb.l.Lock()
+		defer cb.l.Unlock()
+	}
 	cb.mods.compactCertSeen = rnd
 }
 
@@ -190,6 +231,10 @@ func (cb *roundCowState) child() *roundCowState {
 }
 
 func (cb *roundCowState) commitToParent() {
+	if cb.threadsafe {
+		cb.l.Lock()
+		defer cb.l.Unlock()
+	}
 	for addr, delta := range cb.mods.accts {
 		prev, present := cb.commitParent.mods.accts[addr]
 		if present {
@@ -215,6 +260,10 @@ func (cb *roundCowState) commitToParent() {
 }
 
 func (cb *roundCowState) modifiedAccounts() []basics.Address {
+	if cb.threadsafe {
+		cb.l.RLock()
+		defer cb.l.RUnlock()
+	}
 	res := make([]basics.Address, len(cb.mods.accts))
 	i := 0
 	for addr := range cb.mods.accts {

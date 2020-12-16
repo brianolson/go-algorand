@@ -17,9 +17,10 @@
 package ledger
 
 import (
+	"encoding/binary"
 	"testing"
 
-	//"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
@@ -52,7 +53,6 @@ func TestBuildDepGroupsAllDepend(t *testing.T) {
 		}
 		t.Fail()
 	}
-	//require.Equal(t, 1, len(depgroups), depgroups)
 }
 
 // turn a list of txns into one-txn-groups
@@ -63,4 +63,47 @@ func oneTxnGroups(txns []transactions.SignedTxnWithAD) (txgroups [][]transaction
 		txgroups[i][0] = t
 	}
 	return
+}
+
+// TestBuildDepGroupsPerAddr For a bunch of fake txns with one addr in each, one group per addr.
+func TestBuildDepGroupsPerAddr(t *testing.T) {
+	numtxns := 1000
+	numaddrs := (numtxns / 10) + 2
+	addrs := make([]basics.Address, numaddrs)
+	for i := range addrs {
+		binary.LittleEndian.PutUint64(addrs[i][:], uint64(i+1))
+	}
+
+	txns := make([]transactions.SignedTxnWithAD, numtxns)
+	txgroups := make([][]transactions.SignedTxnWithAD, numtxns)
+	for i := 0; i < numtxns; i++ {
+		// TODO: set a random field instead of always Sender?
+		txns[i].Txn.Sender = addrs[i%numaddrs]
+		txgroups[i] = txns[i : i+1]
+	}
+
+	depgroups := buildDepGroups(txgroups)
+	require.Equal(t, numaddrs, len(depgroups))
+}
+
+func BenchmarkBuildDepGroups(b *testing.B) {
+	debugLogf = b
+	numtxns := b.N
+	numaddrs := (numtxns / 10) + 2
+	addrs := make([]basics.Address, numaddrs)
+	for i := range addrs {
+		binary.LittleEndian.PutUint64(addrs[i][:], uint64(i+1))
+	}
+
+	txns := make([]transactions.SignedTxnWithAD, numtxns)
+	txgroups := make([][]transactions.SignedTxnWithAD, numtxns)
+	for i := 0; i < numtxns; i++ {
+		// TODO: set a random field instead of always Sender?
+		txns[i].Txn.Sender = addrs[i%numaddrs]
+		txgroups[i] = txns[i : i+1]
+	}
+
+	b.ResetTimer()
+	depgroups := buildDepGroups(txgroups)
+	b.Logf("%d groups built from %d addrs in %d txns", len(depgroups), numaddrs, numtxns)
 }

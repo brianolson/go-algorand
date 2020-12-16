@@ -185,13 +185,26 @@ func (pdg *paysetDependencyGroup) mustPrecede(txgroup []transactions.SignedTxnWi
 	return false
 }
 
+type logf interface {
+	Logf(format string, args ...interface{})
+}
+
+type nopLogf struct{}
+
+func (nlf *nopLogf) Logf(format string, args ...interface{}) {
+}
+
+var nopLogfSingleton nopLogf
+
+var debugLogf logf = &nopLogfSingleton
+
 func buildDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) (depgroups []paysetDependencyGroup) {
 	depgroups = make([]paysetDependencyGroup, 0, 10)
 	//depgroups[0].add(paysetgroups[0])
 	// TODO: AssetConfig (create or re-config) serializes with anything operating on that asset id (ConfigAsset, XferAsset, FreezeAsset). (acfg.caid == 0) doesn't need to synchronize because practically nothing can depend on it till the next round.
 	// TODO: app call ApplicationID serializes with anything on that ApplicationID
 
-	for _, txgroup := range paysetgroups {
+	for tgi, txgroup := range paysetgroups {
 		dep := -1
 		var dependsOn []int = nil
 		for i, dg := range depgroups {
@@ -223,11 +236,13 @@ func buildDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) (depgroups []
 			depgroups[dep].add(txgroup)
 		} else if dependsOn != nil {
 			// depends on several things, new group
+			debugLogf.Logf("tg[%d] new group, depends on %#v", tgi, dependsOn)
 			npdg := paysetDependencyGroup{dependsOn: dependsOn}
 			npdg.add(txgroup)
 			depgroups = append(depgroups, npdg)
 		} else {
 			// depends on nothing. new group.
+			debugLogf.Logf("tg[%d] new group", tgi)
 			npdg := paysetDependencyGroup{}
 			npdg.add(txgroup)
 			depgroups = append(depgroups, npdg)

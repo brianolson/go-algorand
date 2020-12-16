@@ -123,6 +123,10 @@ func (cs *roundCowState) PutWithCreatable(record basics.BalanceRecord, newCreata
 }
 
 func (cs *roundCowState) Move(from basics.Address, to basics.Address, amt basics.MicroAlgos, fromRewards *basics.MicroAlgos, toRewards *basics.MicroAlgos) error {
+	if cs.threadsafe {
+		cs.l.Lock()
+		defer cs.l.Unlock()
+	}
 	rewardlvl := cs.rewardsLevel()
 
 	fromBal, err := cs.lookup(from)
@@ -495,19 +499,12 @@ func (eval *BlockEvaluator) testTransaction(txn transactions.SignedTxn, cow *rou
 // If the transaction cannot be added to the block without violating some constraints,
 // an error is returned and the block evaluator state is unchanged.
 func (eval *BlockEvaluator) Transaction(txn transactions.SignedTxn, ad transactions.ApplyData) error {
-	return eval.transactionGroup([]transactions.SignedTxnWithAD{
+	return eval.TransactionGroup([]transactions.SignedTxnWithAD{
 		transactions.SignedTxnWithAD{
 			SignedTxn: txn,
 			ApplyData: ad,
 		},
 	})
-}
-
-// TransactionGroup tentatively adds a new transaction group as part of this block evaluation.
-// If the transaction group cannot be added to the block without violating some constraints,
-// an error is returned and the block evaluator state is unchanged.
-func (eval *BlockEvaluator) TransactionGroup(txads []transactions.SignedTxnWithAD) error {
-	return eval.transactionGroup(txads)
 }
 
 // prepareAppEvaluators creates appTealEvaluators for each ApplicationCall
@@ -552,10 +549,10 @@ func (eval *BlockEvaluator) prepareAppEvaluators(txgroup []transactions.SignedTx
 	return
 }
 
-// transactionGroup tentatively executes a group of transactions as part of this block evaluation.
+// TransactionGroup tentatively adds a new transaction group as part of this block evaluation.
 // If the transaction group cannot be added to the block without violating some constraints,
 // an error is returned and the block evaluator state is unchanged.
-func (eval *BlockEvaluator) transactionGroup(txgroup []transactions.SignedTxnWithAD) error {
+func (eval *BlockEvaluator) TransactionGroup(txgroup []transactions.SignedTxnWithAD) error {
 	// Nothing to do if there are no transactions.
 	if len(txgroup) == 0 {
 		return nil
