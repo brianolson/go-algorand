@@ -19,6 +19,7 @@ package ledger
 import (
 	"encoding/binary"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -87,7 +88,7 @@ func TestBuildDepGroupsPerAddr(t *testing.T) {
 }
 
 func BenchmarkBuildDepGroups(b *testing.B) {
-	debugLogf = b
+	//debugLogf = b
 	numtxns := b.N
 	numaddrs := (numtxns / 10) + 2
 	addrs := make([]basics.Address, numaddrs)
@@ -103,7 +104,9 @@ func BenchmarkBuildDepGroups(b *testing.B) {
 		txgroups[i] = txns[i : i+1]
 	}
 
+	start := time.Now()
 	b.ResetTimer()
 	depgroups := buildDepGroups(txgroups)
-	b.Logf("%d groups built from %d addrs in %d txns", len(depgroups), numaddrs, numtxns)
+	dt := time.Now().Sub(start)
+	b.Logf("%d groups built from %d addrs in %d txns in %s", len(depgroups), numaddrs, numtxns, dt)
 }

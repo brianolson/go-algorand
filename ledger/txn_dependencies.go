@@ -118,6 +118,8 @@ type paysetDependencyGroup struct {
 
 	// app ids called or configured
 	appIds []basics.AppIndex
+
+	index int
 }
 
 func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD) {

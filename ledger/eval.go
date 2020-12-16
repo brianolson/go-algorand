@@ -996,7 +996,7 @@ func eval(ctx context.Context, l ledgerForEvaluator, blk bookkeeping.Block, vali
 
 	}
 
-	// TODO:
+	// TODO: parallelize here
 	for _, txgroup := range paysetgroups {
 		select {
 		case <-ctx.Done():
