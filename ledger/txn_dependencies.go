@@ -111,7 +111,7 @@ type paysetDependencyGroup struct {
 	addrs addrSet
 
 	// paysetDependencyGroup that must execute before this one
-	dependsOn []int
+	dependsOn []*paysetDependencyGroup
 
 	// existing assets that were modified by acfg
 	assetsChanged []basics.AssetIndex
@@ -119,7 +119,10 @@ type paysetDependencyGroup struct {
 	// app ids called or configured
 	appIds []basics.AppIndex
 
-	index int
+	// add nothing new here, it may have been sent for eval
+	closed bool
+
+	id int
 }
 
 func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD) {
@@ -187,6 +190,31 @@ func (pdg *paysetDependencyGroup) mustPrecede(txgroup []transactions.SignedTxnWi
 	return false
 }
 
+// for testing
+func (pdg *paysetDependencyGroup) hasIntersection(dg *paysetDependencyGroup, logf func(format string, args ...interface{})) bool {
+	for _, daddr := range dg.addrs.they {
+		if pdg.addrs.contains(daddr.addr) {
+			logf("addr %s", daddr.addr.String())
+			return true
+		}
+	}
+	for _, aa := range pdg.assetsChanged {
+		for _, ab := range dg.assetsChanged {
+			if aa == ab {
+				return true
+			}
+		}
+	}
+	for _, pa := range pdg.appIds {
+		for _, pb := range dg.appIds {
+			if pa == pb {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type logf interface {
 	Logf(format string, args ...interface{})
 }
@@ -200,6 +228,7 @@ var nopLogfSingleton nopLogf
 
 var debugLogf logf = &nopLogfSingleton
 
+/*
 func buildDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) (depgroups []paysetDependencyGroup) {
 	depgroups = make([]paysetDependencyGroup, 0, 10)
 	//depgroups[0].add(paysetgroups[0])
@@ -250,5 +279,229 @@ func buildDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) (depgroups []
 			depgroups = append(depgroups, npdg)
 		}
 	}
+	return
+        }
+*/
+
+type ringFifo struct {
+	they []interface{}
+
+	// next position to write to
+	in int
+
+	// next position to read from
+	out int
+}
+
+func (rf *ringFifo) isFull() bool {
+	return ((rf.in + 1) % len(rf.they)) == rf.out
+}
+
+func (rf *ringFifo) isEmpty() bool {
+	return rf.in == rf.out
+}
+
+func (rf *ringFifo) put(x interface{}) {
+	rf.they[rf.in] = x
+	rf.in = (rf.in + 1) % len(rf.they)
+}
+
+func (rf *ringFifo) pop() (v interface{}, ok bool) {
+	if rf.in == rf.out {
+		return nil, false
+	}
+	v = rf.they[rf.out]
+	ok = true
+	rf.out = (rf.out + 1) % len(rf.they)
+	return
+}
+
+/*
+func (rf *ringFifo) contains(x interface{}) bool {
+	i := rf.out
+	for i != rf.in {
+		if rf.they[i] == x {
+			return true
+		}
+		i = (i + 1) % len(rf.they)
+	}
+	return false
+}
+*/
+
+type actionFlags int
+
+const (
+	noAction    actionFlags = 0
+	actionPop   actionFlags = 1
+	quitForeach actionFlags = 2
+)
+
+func (rf *ringFifo) foreach(visitor func(x interface{}) actionFlags) {
+	i := rf.out
+	for i != rf.in {
+		action := visitor(rf.they[i])
+		if (action & actionPop) != 0 {
+			source := (i + 1) % len(rf.they)
+			dest := i
+			for source != rf.in {
+				rf.they[dest] = rf.they[source]
+				source = (source + 1) % len(rf.they)
+				dest = (dest + 1) % len(rf.they)
+			}
+			rf.in = (rf.in + len(rf.they) - 1) % len(rf.they)
+		} else {
+			i = (i + 1) % len(rf.they)
+		}
+		if (action & quitForeach) != 0 {
+			return
+		}
+	}
+}
+
+type depGroupRunner struct {
+	dgi int
+
+	// dependency groups being analyzed and added to
+	dgFifo ringFifo
+
+	// dependency groups being run by evaluator
+	inProcessing []*paysetDependencyGroup
+
+	// send to processing threads
+	todo chan *paysetDependencyGroup
+
+	// return from processing threads
+	done chan *paysetDependencyGroup
+
+	// next on todo
+	nextToSend *paysetDependencyGroup
+}
+
+func (dgr *depGroupRunner) nextForProcessing() (next *paysetDependencyGroup) {
+	dgr.dgFifo.foreach(func(x interface{}) actionFlags {
+		dg := x.(*paysetDependencyGroup)
+		for _, dgp := range dg.dependsOn {
+			for _, pp := range dgr.inProcessing {
+				if pp == dgp {
+					return noAction
+				}
+			}
+		}
+		next = dg
+		return actionPop | quitForeach
+	})
+	return
+}
+func (dgr *depGroupRunner) removeFromInProcessing(dg *paysetDependencyGroup) {
+	for i, v := range dgr.inProcessing {
+		if v == dg {
+			end := len(dgr.inProcessing) - 1
+			dgr.inProcessing[i] = dgr.inProcessing[end]
+			dgr.inProcessing = dgr.inProcessing[:end]
+			break
+		}
+	}
+}
+func (dgr *depGroupRunner) processDone() {
+	select {
+	case dg := <-dgr.done:
+		dgr.removeFromInProcessing(dg)
+	default:
+	}
+}
+func (dgr *depGroupRunner) processTodoDone() {
+	if dgr.nextToSend == nil {
+		dgr.nextToSend = dgr.nextForProcessing()
+		id := -1
+		if dgr.nextToSend != nil {
+			id = dgr.nextToSend.id
+		}
+		debugLogf.Logf("next to send %p %d", dgr.nextToSend, id)
+	}
+	var dg *paysetDependencyGroup
+	if dgr.nextToSend == nil {
+		select {
+		case dg = <-dgr.done:
+			dgr.removeFromInProcessing(dg)
+		default:
+		}
+	} else if len(dgr.inProcessing) == 0 {
+		select {
+		case dgr.todo <- dgr.nextToSend:
+			dgr.inProcessing = append(dgr.inProcessing, dgr.nextToSend)
+			dgr.nextToSend = nil
+		default:
+		}
+	} else {
+		select {
+		case dg = <-dgr.done:
+			dgr.removeFromInProcessing(dg)
+		case dgr.todo <- dgr.nextToSend:
+			dgr.inProcessing = append(dgr.inProcessing, dgr.nextToSend)
+			dgr.nextToSend = nil
+		}
+	}
+}
+func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) {
+	dgr.dgFifo.they = make([]interface{}, 10)
+	dref := make([]*paysetDependencyGroup, 0, 10)
+
+	noSendCounter := 0
+	for tgi, txgroup := range paysetgroups {
+		for dgr.dgFifo.isFull() {
+			dgr.processTodoDone()
+			noSendCounter = 0
+		}
+		if noSendCounter > 5 || len(dgr.inProcessing) == 0 {
+			dgr.processTodoDone()
+		}
+		dref = dref[:0]
+		for _, dg := range dgr.inProcessing {
+			if dg.mustPrecede(txgroup) {
+				dref = append(dref, dg)
+			}
+		}
+		dgr.dgFifo.foreach(func(x interface{}) actionFlags {
+			dg := x.(*paysetDependencyGroup)
+			if dg.mustPrecede(txgroup) {
+				dref = append(dref, dg)
+			}
+			return noAction
+		})
+
+		if len(dref) == 0 {
+			// depends on nothing. new group.
+			debugLogf.Logf("tg[%d] new group, no deps", tgi)
+			npdg := &paysetDependencyGroup{id: dgr.dgi}
+			dgr.dgi++
+			npdg.add(txgroup)
+			dgr.dgFifo.put(npdg)
+		} else if len(dref) == 1 {
+			// depends on one thing, append to that group
+			dref[0].add(txgroup)
+		} else {
+			// depends on several things, new group
+			dependsOn := make([]*paysetDependencyGroup, len(dref))
+			copy(dependsOn, dref)
+			debugLogf.Logf("tg[%d] new group, depends on %#v", tgi, dependsOn)
+			npdg := &paysetDependencyGroup{dependsOn: dependsOn, id: dgr.dgi}
+			dgr.dgi++
+			npdg.add(txgroup)
+			dgr.dgFifo.put(npdg)
+		}
+		noSendCounter++
+	}
+	// finish sending things todo
+	for !dgr.dgFifo.isEmpty() {
+		dgr.processTodoDone()
+	}
+	close(dgr.todo)
+	//for dg := range dgr.done {
+	for len(dgr.inProcessing) > 0 {
+		dg := <-dgr.done
+		dgr.removeFromInProcessing(dg)
+	}
+	// TODO: check that everything finished nicely
 	return
 }

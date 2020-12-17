@@ -19,14 +19,12 @@ package ledger
 import (
 	"encoding/binary"
 	"testing"
-	"time"
-
-	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
 )
 
+/*
 // TestBuildDepGroupsAllDepend is a simple test where all txns share a common address and become one dependency group
 func TestBuildDepGroupsAllDepend(t *testing.T) {
 	//paysetgroups := make([][]transactions.SignedTxnWithAD, 0, 20)
@@ -109,4 +107,67 @@ func BenchmarkBuildDepGroups(b *testing.B) {
 	depgroups := buildDepGroups(txgroups)
 	dt := time.Now().Sub(start)
 	b.Logf("%d groups built from %d addrs in %d txns in %s", len(depgroups), numaddrs, numtxns, dt)
+}
+*/
+
+func fakeBlockEval(t *testing.T, todo, done chan *paysetDependencyGroup) {
+	var fifo ringFifo
+	logf := func(format string, args ...interface{}) {
+		t.Logf(format, args...)
+	}
+	fifo.they = make([]interface{}, 5)
+	for dg := range todo {
+		t.Logf("todo %p", dg)
+		fifo.foreach(func(x interface{}) actionFlags {
+			xdg := x.(*paysetDependencyGroup)
+			if xdg.hasIntersection(dg, logf) {
+				t.Errorf("dependency collision in active pdgs %p %p", xdg, dg)
+			}
+			return noAction
+		})
+		if fifo.isFull() {
+			v, ok := fifo.pop()
+			if ok {
+				done <- v.(*paysetDependencyGroup)
+			} else {
+				t.Fatal("fifo pop not ok")
+			}
+		}
+		fifo.put(dg)
+	}
+	for !fifo.isEmpty() {
+		v, ok := fifo.pop()
+		if ok {
+			done <- v.(*paysetDependencyGroup)
+		} else {
+			t.Fatal("fifo pop not ok")
+		}
+	}
+	close(done)
+}
+
+func TestRunDepGroups(t *testing.T) {
+	oldDebugLogf := debugLogf
+	debugLogf = t
+	defer func() { debugLogf = oldDebugLogf }()
+	numtxns := 1000
+	numaddrs := (numtxns / 10) + 2
+	addrs := make([]basics.Address, numaddrs)
+	for i := range addrs {
+		binary.LittleEndian.PutUint64(addrs[i][:], uint64(i+1))
+	}
+
+	txns := make([]transactions.SignedTxnWithAD, numtxns)
+	txgroups := make([][]transactions.SignedTxnWithAD, numtxns)
+	for i := 0; i < numtxns; i++ {
+		// TODO: set a random field instead of always Sender?
+		txns[i].Txn.Sender = addrs[i%numaddrs]
+		txgroups[i] = txns[i : i+1]
+	}
+
+	var dgr depGroupRunner
+	dgr.todo = make(chan *paysetDependencyGroup, 10)
+	dgr.done = make(chan *paysetDependencyGroup, 10)
+	go fakeBlockEval(t, dgr.todo, dgr.done)
+	dgr.runDepGroups(txgroups)
 }
