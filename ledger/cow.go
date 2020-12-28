@@ -18,6 +18,7 @@ package ledger
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
@@ -95,50 +96,61 @@ func (cb *roundCowState) rewardsLevel() uint64 {
 }
 
 func (cb *roundCowState) getCreator(cidx basics.CreatableIndex, ctype basics.CreatableType) (creator basics.Address, ok bool, err error) {
+	if cb.threadsafe {
+		cb.l.RLock()
+	}
 	delta, ok := cb.mods.creatables[cidx]
+	if cb.threadsafe {
+		cb.l.RUnlock()
+	}
 	if ok {
 		if delta.created && delta.ctype == ctype {
 			return delta.creator, true, nil
 		}
 		return basics.Address{}, false, nil
 	}
-	if cb.threadsafe {
-		cb.l.RLock()
-		defer cb.l.RUnlock()
-	}
 	return cb.lookupParent.getCreator(cidx, ctype)
 }
 
 func (cb *roundCowState) lookup(addr basics.Address) (data basics.AccountData, err error) {
-	d, ok := cb.mods.accts[addr]
-	if ok {
-		return d.new, nil
-	}
-
 	if cb.threadsafe {
 		cb.l.RLock()
-		defer cb.l.RUnlock()
+	}
+	d, ok := cb.mods.accts[addr]
+	if cb.threadsafe {
+		cb.l.RUnlock()
+	}
+	if ok {
+		return d.new, nil
 	}
 	return cb.lookupParent.lookup(addr)
 }
 
 func (cb *roundCowState) checkDup(firstValid, lastValid basics.Round, txid transactions.Txid, txl txlease) error {
+	if cb.threadsafe {
+		cb.l.RLock()
+	}
 	_, present := cb.mods.Txids[txid]
+	if cb.threadsafe {
+		cb.l.RUnlock()
+	}
 	if present {
 		return &TransactionInLedgerError{Txid: txid}
 	}
 
 	if cb.proto.SupportTransactionLeases && (txl.lease != [32]byte{}) {
+		if cb.threadsafe {
+			cb.l.RLock()
+		}
 		expires, ok := cb.mods.txleases[txl]
+		if cb.threadsafe {
+			cb.l.RUnlock()
+		}
 		if ok && cb.mods.hdr.Round <= expires {
 			return &LeaseInLedgerError{txid: txid, lease: txl}
 		}
 	}
 
-	if cb.threadsafe {
-		cb.l.RLock()
-		defer cb.l.RUnlock()
-	}
 	return cb.lookupParent.checkDup(firstValid, lastValid, txid, txl)
 }
 
@@ -151,12 +163,9 @@ func (cb *roundCowState) txnCounter() uint64 {
 }
 
 func (cb *roundCowState) compactCertLast() basics.Round {
-	if cb.mods.compactCertSeen != 0 {
-		return cb.mods.compactCertSeen
-	}
-	if cb.threadsafe {
-		cb.l.RLock()
-		defer cb.l.RUnlock()
+	ccs := atomic.LoadUint64((*uint64)(&cb.mods.compactCertSeen))
+	if ccs != 0 {
+		return basics.Round(ccs)
 	}
 	return cb.lookupParent.compactCertLast()
 }
@@ -208,11 +217,7 @@ func (cb *roundCowState) addTx(txn transactions.Transaction, txid transactions.T
 }
 
 func (cb *roundCowState) sawCompactCert(rnd basics.Round) {
-	if cb.threadsafe {
-		cb.l.Lock()
-		defer cb.l.Unlock()
-	}
-	cb.mods.compactCertSeen = rnd
+	atomic.StoreUint64((*uint64)(&cb.mods.compactCertSeen), uint64(rnd))
 }
 
 func (cb *roundCowState) child() *roundCowState {
@@ -235,6 +240,10 @@ func (cb *roundCowState) commitToParent() {
 		cb.l.Lock()
 		defer cb.l.Unlock()
 	}
+	if cb.commitParent.threadsafe {
+		cb.commitParent.l.Lock()
+		defer cb.commitParent.l.Unlock()
+	}
 	for addr, delta := range cb.mods.accts {
 		prev, present := cb.commitParent.mods.accts[addr]
 		if present {
@@ -256,7 +265,7 @@ func (cb *roundCowState) commitToParent() {
 	for cidx, delta := range cb.mods.creatables {
 		cb.commitParent.mods.creatables[cidx] = delta
 	}
-	cb.commitParent.mods.compactCertSeen = cb.mods.compactCertSeen
+	atomic.StoreUint64((*uint64)(&cb.commitParent.mods.compactCertSeen), uint64(cb.mods.compactCertSeen))
 }
 
 func (cb *roundCowState) modifiedAccounts() []basics.Address {
