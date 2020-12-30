@@ -20,6 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
+	"sync"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/crypto"
@@ -986,22 +989,11 @@ func eval(ctx context.Context, l ledgerForEvaluator, blk bookkeeping.Block, vali
 	}
 
 	// TODO: parallelize here
-	for _, txgroup := range paysetgroups {
-		select {
-		case <-ctx.Done():
-			return StateDelta{}, ctx.Err()
-		case err, open := <-txvalidator.done:
-			// if we're not validating, then `txvalidator.done` would be nil, in which case this case statement would never be executed.
-			if open && err != nil {
-				return StateDelta{}, err
-			}
-		default:
-		}
-
-		err = eval.TransactionGroup(txgroup)
-		if err != nil {
-			return StateDelta{}, err
-		}
+	// TODO: if len(paysetgroups) < 10 { serial } else { parallel }
+	//err = eval.checkPaysetgroupsSerial(ctx, paysetgroups, &txvalidator)
+	err = eval.checkPaysetgroupsParallel(ctx, paysetgroups, &txvalidator)
+	if err != nil {
+		return StateDelta{}, err
 	}
 
 	// Finally, procees any pending end-of-block state changes
@@ -1031,6 +1023,108 @@ func eval(ctx context.Context, l ledgerForEvaluator, blk bookkeeping.Block, vali
 	}
 
 	return eval.state.mods, nil
+}
+
+func (eval *BlockEvaluator) checkPaysetgroupsSerial(ctx context.Context, paysetgroups [][]transactions.SignedTxnWithAD, txvalidator *evalTxValidator) error {
+	for _, txgroup := range paysetgroups {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err, open := <-txvalidator.done:
+			// if we're not validating, then `txvalidator.done` would be nil, in which case this case statement would never be executed.
+			if open && err != nil {
+				return err
+			}
+		default:
+		}
+
+		err := eval.TransactionGroup(txgroup)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func debug(f string, a ...interface{}) {
+	f = f + "\n"
+	fmt.Fprintf(os.Stderr, f, a...)
+}
+
+func (eval *BlockEvaluator) checkPaysetgroupsParallel(ctx context.Context, paysetgroups [][]transactions.SignedTxnWithAD, txvalidator *evalTxValidator) error {
+	debug("checkPaysetgroupsParallel %d groups", len(paysetgroups))
+	var wg sync.WaitGroup
+	var dgr depGroupRunner
+	dgr.todo = make(chan *paysetDependencyGroup, 10)
+	dgr.done = make(chan *paysetDependencyGroup, 10)
+	failWaitQuit := make(chan struct{}, 1)
+	ctx, cf := context.WithCancel(ctx)
+	var validateErr error
+	go validateFailWaiter(txvalidator, cf, failWaitQuit, &validateErr)
+	nthreads := runtime.GOMAXPROCS(-1)
+	nalt := len(paysetgroups) / 4
+	if nalt == 0 {
+		nalt = 1
+	}
+	if nthreads > nalt {
+		nthreads = nalt
+	}
+	wg.Add(nthreads)
+	for i := 0; i < nthreads; i++ {
+		go evalThread(ctx, eval, dgr.todo, dgr.done, &wg)
+	}
+	go func() {
+		wg.Wait()
+		close(dgr.done)
+	}()
+	err := dgr.runDepGroups(paysetgroups)
+	close(failWaitQuit)
+	if validateErr != nil {
+		err = validateErr
+	}
+	return err
+}
+
+func validateFailWaiter(txvalidator *evalTxValidator, cf func(), quit chan struct{}, validateErr *error) {
+	for {
+		select {
+		case err, open := <-txvalidator.done:
+			if open && err != nil {
+				*validateErr = err
+				cf()
+			}
+		case <-quit:
+			return
+		}
+	}
+}
+
+func evalThread(ctx context.Context, eval *BlockEvaluator, todo, done chan *paysetDependencyGroup, wg *sync.WaitGroup) {
+	count := 0
+	defer wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			debug("evalThread ctxDone after %d", count)
+			return
+		case dg, ok := <-todo:
+			if !ok {
+				debug("evalThread todo closed after %d", count)
+				// closed. done.
+				return
+			}
+			for _, txgroup := range dg.paysetgroups {
+				err := eval.TransactionGroup(txgroup)
+				if err != nil {
+					dg.err = err
+					debug("evalThread err at group[%d] %v", count, err)
+					done <- dg
+					return
+				}
+				count++
+			}
+		}
+	}
 }
 
 // Validate uses the ledger to validate block blk as a candidate next block.

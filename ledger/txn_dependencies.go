@@ -123,6 +123,8 @@ type paysetDependencyGroup struct {
 	closed bool
 
 	id int
+
+	err error
 }
 
 func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD) {
@@ -376,6 +378,8 @@ type depGroupRunner struct {
 
 	// next on todo
 	nextToSend *paysetDependencyGroup
+
+	err error
 }
 
 func (dgr *depGroupRunner) nextForProcessing() (next *paysetDependencyGroup) {
@@ -402,7 +406,12 @@ func (dgr *depGroupRunner) removeFromInProcessing(dg *paysetDependencyGroup) {
 			break
 		}
 	}
+	if dg.err != nil {
+		dgr.err = dg.err
+	}
 }
+
+/*
 func (dgr *depGroupRunner) processDone() {
 	select {
 	case dg := <-dgr.done:
@@ -410,6 +419,8 @@ func (dgr *depGroupRunner) processDone() {
 	default:
 	}
 }
+*/
+
 func (dgr *depGroupRunner) processTodoDone() {
 	if dgr.nextToSend == nil {
 		dgr.nextToSend = dgr.nextForProcessing()
@@ -443,7 +454,7 @@ func (dgr *depGroupRunner) processTodoDone() {
 		}
 	}
 }
-func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) {
+func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnWithAD) error {
 	dgr.dgFifo.they = make([]interface{}, 10)
 	dref := make([]*paysetDependencyGroup, 0, 10)
 
@@ -452,9 +463,15 @@ func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnW
 		for dgr.dgFifo.isFull() {
 			dgr.processTodoDone()
 			noSendCounter = 0
+			if dgr.err != nil {
+				return dgr.err
+			}
 		}
 		if noSendCounter > 5 || len(dgr.inProcessing) == 0 {
 			dgr.processTodoDone()
+			if dgr.err != nil {
+				return dgr.err
+			}
 		}
 		dref = dref[:0]
 		for _, dg := range dgr.inProcessing {
@@ -495,13 +512,19 @@ func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnW
 	// finish sending things todo
 	for !dgr.dgFifo.isEmpty() {
 		dgr.processTodoDone()
+		if dgr.err != nil {
+			return dgr.err
+		}
 	}
 	close(dgr.todo)
 	//for dg := range dgr.done {
 	for len(dgr.inProcessing) > 0 {
-		dg := <-dgr.done
+		dg, ok := <-dgr.done
+		if !ok {
+			break
+		}
 		dgr.removeFromInProcessing(dg)
 	}
 	// TODO: check that everything finished nicely
-	return
+	return dgr.err
 }
