@@ -352,6 +352,11 @@ func BenchmarkBlockEvaluatorDiskNoCrypto(b *testing.B) {
 
 // this variant focuses on benchmarking ledger.go `eval()`, the rest is setup, it runs eval() b.N times.
 func benchmarkBlockEvaluator(b *testing.B, inMem bool, withCrypto bool) {
+	// for txn_dependencies.go
+	// oldDebugLogf := debugLogf
+	// debugLogf = b
+	// defer func() { debugLogf = oldDebugLogf }()
+
 	deadlockDisable := deadlock.Opts.Disable
 	deadlock.Opts.Disable = true
 	defer func() { deadlock.Opts.Disable = deadlockDisable }()
@@ -440,6 +445,7 @@ func benchmarkBlockEvaluator(b *testing.B, inMem bool, withCrypto bool) {
 	backlogPool := execpool.MakeBacklog(nil, 0, execpool.LowPriority, nil)
 	defer backlogPool.Shutdown()
 
+	b.Logf("validatedBlock.blk.TxnRoot %v", validatedBlock.blk.TxnRoot)
 	// test speed of block validation
 	// This should be the same as the eval line in ledger.go AddBlock()
 	// This is pulled out to isolate eval() time from db ops of AddValidatedBlock()

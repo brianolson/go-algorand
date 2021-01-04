@@ -19,6 +19,7 @@ package ledger
 import (
 	"bytes"
 	"encoding/binary"
+	"time"
 
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
@@ -398,17 +399,20 @@ func (dgr *depGroupRunner) nextForProcessing() (next *paysetDependencyGroup) {
 	return
 }
 func (dgr *depGroupRunner) removeFromInProcessing(dg *paysetDependencyGroup) {
+	debugLogf.Logf("done %p %d", dg, dg.id)
 	for i, v := range dgr.inProcessing {
 		if v == dg {
 			end := len(dgr.inProcessing) - 1
 			dgr.inProcessing[i] = dgr.inProcessing[end]
+			dgr.inProcessing[end] = nil // Go GC can count references past end of active slice
 			dgr.inProcessing = dgr.inProcessing[:end]
-			break
+			if dg.err != nil {
+				dgr.err = dg.err
+			}
+			return
 		}
 	}
-	if dg.err != nil {
-		dgr.err = dg.err
-	}
+	debug("removeFromInProcessing but not inProcessing %#v", dg)
 }
 
 /*
@@ -427,8 +431,8 @@ func (dgr *depGroupRunner) processTodoDone() {
 		id := -1
 		if dgr.nextToSend != nil {
 			id = dgr.nextToSend.id
+			debugLogf.Logf("next to send %p %d", dgr.nextToSend, id)
 		}
-		debugLogf.Logf("next to send %p %d", dgr.nextToSend, id)
 	}
 	var dg *paysetDependencyGroup
 	if dgr.nextToSend == nil {
@@ -459,7 +463,11 @@ func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnW
 	dref := make([]*paysetDependencyGroup, 0, 10)
 
 	noSendCounter := 0
+	incount := 0
+	nodep := 0
+	mdep := 0
 	for tgi, txgroup := range paysetgroups {
+		incount++
 		for dgr.dgFifo.isFull() {
 			dgr.processTodoDone()
 			noSendCounter = 0
@@ -474,31 +482,37 @@ func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnW
 			}
 		}
 		dref = dref[:0]
+		ipc := 0
 		for _, dg := range dgr.inProcessing {
 			if dg.mustPrecede(txgroup) {
 				dref = append(dref, dg)
+				ipc++
 			}
 		}
+		dgf := 0
 		dgr.dgFifo.foreach(func(x interface{}) actionFlags {
 			dg := x.(*paysetDependencyGroup)
 			if dg.mustPrecede(txgroup) {
 				dref = append(dref, dg)
+				dgf++
 			}
 			return noAction
 		})
 
 		if len(dref) == 0 {
 			// depends on nothing. new group.
+			nodep++
 			debugLogf.Logf("tg[%d] new group, no deps", tgi)
 			npdg := &paysetDependencyGroup{id: dgr.dgi}
 			dgr.dgi++
 			npdg.add(txgroup)
 			dgr.dgFifo.put(npdg)
-		} else if len(dref) == 1 {
-			// depends on one thing, append to that group
+		} else if len(dref) == 1 && ipc == 0 {
+			// depends on one thing (which is not already in processing) append to that group
 			dref[0].add(txgroup)
 		} else {
 			// depends on several things, new group
+			mdep++
 			dependsOn := make([]*paysetDependencyGroup, len(dref))
 			copy(dependsOn, dref)
 			debugLogf.Logf("tg[%d] new group, depends on %#v", tgi, dependsOn)
@@ -509,12 +523,15 @@ func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnW
 		}
 		noSendCounter++
 	}
+	debugLogf.Logf("runDepGroups %d groups, %d nodep, %d mdep", incount, nodep, mdep)
 	// finish sending things todo
 	for !dgr.dgFifo.isEmpty() {
 		dgr.processTodoDone()
 		if dgr.err != nil {
 			return dgr.err
 		}
+		debugLogf.Logf("dgr.dgFifo.isEmpty()=%v len(dgr.inProcessing)=%d", dgr.dgFifo.isEmpty(), len(dgr.inProcessing))
+		time.Sleep(10 * time.Millisecond)
 	}
 	close(dgr.todo)
 	//for dg := range dgr.done {

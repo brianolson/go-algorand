@@ -849,7 +849,7 @@ func (eval *BlockEvaluator) finalValidation() error {
 		// check commitments
 		txnRoot := eval.block.Payset.Commit(eval.proto.PaysetCommitFlat)
 		if txnRoot != eval.block.TxnRoot {
-			return fmt.Errorf("txn root wrong: %v != %v", txnRoot, eval.block.TxnRoot)
+			return fmt.Errorf("txn root wrong: calculated %v != stored %v", txnRoot, eval.block.TxnRoot)
 		}
 
 		var expectedTxnCount uint64
@@ -1018,6 +1018,7 @@ func eval(ctx context.Context, l ledgerForEvaluator, blk bookkeeping.Block, vali
 		}
 		err = eval.finalValidation()
 		if err != nil {
+			debug("eval.block.Payset len=%d, blk.Payset len=%d", len(eval.block.Payset), len(blk.Payset))
 			return StateDelta{}, err
 		}
 	}
@@ -1123,6 +1124,7 @@ func evalThread(ctx context.Context, eval *BlockEvaluator, todo, done chan *pays
 				}
 				count++
 			}
+			done <- dg
 		}
 	}
 }
