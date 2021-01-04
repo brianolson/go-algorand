@@ -19,6 +19,7 @@ package ledger
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
@@ -408,8 +409,8 @@ func benchmarkBlockEvaluator(b *testing.B, inMem bool, withCrypto bool) {
 	numTxns := 50000
 
 	for i := 0; i < numTxns; i++ {
-		sender := i % len(addrs)
-		receiver := (i + 1) % len(addrs)
+		sender := rand.Intn(len(addrs))
+		receiver := rand.Intn(len(addrs))
 		txn := transactions.Transaction{
 			Type: protocol.PaymentTx,
 			Header: transactions.Header{

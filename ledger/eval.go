@@ -1054,6 +1054,7 @@ func debug(f string, a ...interface{}) {
 
 func (eval *BlockEvaluator) checkPaysetgroupsParallel(ctx context.Context, paysetgroups [][]transactions.SignedTxnWithAD, txvalidator *evalTxValidator) error {
 	debug("checkPaysetgroupsParallel %d groups", len(paysetgroups))
+	eval.state.threadsafe = true
 	var wg sync.WaitGroup
 	var dgr depGroupRunner
 	dgr.todo = make(chan *paysetDependencyGroup, 10)
