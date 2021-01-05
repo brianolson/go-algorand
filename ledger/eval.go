@@ -20,9 +20,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	//"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/crypto"
@@ -215,6 +216,9 @@ type BlockEvaluator struct {
 	blockGenerated bool // prevent repeated GenerateBlock calls
 
 	l ledgerForEvaluator
+
+	threadsafe bool
+	lock       sync.Mutex
 }
 
 type ledgerForEvaluator interface {
@@ -548,20 +552,36 @@ func (eval *BlockEvaluator) prepareAppEvaluators(txgroup []transactions.SignedTx
 // If the transaction group cannot be added to the block without violating some constraints,
 // an error is returned and the block evaluator state is unchanged.
 func (eval *BlockEvaluator) TransactionGroup(txgroup []transactions.SignedTxnWithAD) error {
+	var cow *roundCowState
+	var err error
+	var txibs []transactions.SignedTxnInBlock
+	var groupTxBytes int
+	err, txibs, groupTxBytes, cow = eval.transactionGroupCore(txgroup)
+	if err != nil {
+		return err
+	}
+	eval.block.Payset = append(eval.block.Payset, txibs...)
+	eval.blockTxBytes += groupTxBytes
+	cow.commitToParent()
+
+	return nil
+}
+func (eval *BlockEvaluator) transactionGroupCore(txgroup []transactions.SignedTxnWithAD) (err error, txibs []transactions.SignedTxnInBlock, groupTxBytes int, cow *roundCowState) {
 	// Nothing to do if there are no transactions.
 	if len(txgroup) == 0 {
-		return nil
+		return
 	}
 
 	if len(txgroup) > eval.proto.MaxTxGroupSize {
-		return fmt.Errorf("group size %d exceeds maximum %d", len(txgroup), eval.proto.MaxTxGroupSize)
+		err = fmt.Errorf("group size %d exceeds maximum %d", len(txgroup), eval.proto.MaxTxGroupSize)
+		return
 	}
 
-	var txibs []transactions.SignedTxnInBlock
+	//var txibs []transactions.SignedTxnInBlock
 	var group transactions.TxGroup
-	var groupTxBytes int
+	//var groupTxBytes int
 
-	cow := eval.state.child()
+	cow = eval.state.child()
 
 	// Prepare TEAL contexts for any ApplicationCall transactions in the group
 	appEvaluators := eval.prepareAppEvaluators(txgroup)
@@ -571,9 +591,9 @@ func (eval *BlockEvaluator) TransactionGroup(txgroup []transactions.SignedTxnWit
 	for gi, txad := range txgroup {
 		var txib transactions.SignedTxnInBlock
 
-		err := eval.transaction(txad.SignedTxn, appEvaluators[gi], txad.ApplyData, cow, &txib)
+		err = eval.transaction(txad.SignedTxn, appEvaluators[gi], txad.ApplyData, cow, &txib)
 		if err != nil {
-			return err
+			return
 		}
 
 		txibs = append(txibs, txib)
@@ -581,14 +601,16 @@ func (eval *BlockEvaluator) TransactionGroup(txgroup []transactions.SignedTxnWit
 		if eval.validate {
 			groupTxBytes += len(protocol.Encode(&txib))
 			if eval.blockTxBytes+groupTxBytes > eval.proto.MaxTxnBytesPerBlock {
-				return ErrNoSpace
+				err = ErrNoSpace
+				return
 			}
 		}
 
 		// Make sure all transactions in group have the same group value
 		if txad.SignedTxn.Txn.Group != txgroup[0].SignedTxn.Txn.Group {
-			return fmt.Errorf("transactionGroup: inconsistent group values: %v != %v",
+			err = fmt.Errorf("transactionGroup: inconsistent group values: %v != %v",
 				txad.SignedTxn.Txn.Group, txgroup[0].SignedTxn.Txn.Group)
+			return
 		}
 
 		if !txad.SignedTxn.Txn.Group.IsZero() {
@@ -597,19 +619,39 @@ func (eval *BlockEvaluator) TransactionGroup(txgroup []transactions.SignedTxnWit
 
 			group.TxGroupHashes = append(group.TxGroupHashes, crypto.HashObj(txWithoutGroup))
 		} else if len(txgroup) > 1 {
-			return fmt.Errorf("transactionGroup: [%d] had zero Group but was submitted in a group of %d", gi, len(txgroup))
+			err = fmt.Errorf("transactionGroup: [%d] had zero Group but was submitted in a group of %d", gi, len(txgroup))
+			return
 		}
 	}
 
 	// If we had a non-zero Group value, check that all group members are present.
 	if group.TxGroupHashes != nil {
 		if txgroup[0].SignedTxn.Txn.Group != crypto.HashObj(group) {
-			return fmt.Errorf("transactionGroup: incomplete group: %v != %v (%v)",
+			err = fmt.Errorf("transactionGroup: incomplete group: %v != %v (%v)",
 				txgroup[0].SignedTxn.Txn.Group, crypto.HashObj(group), group)
+			return
 		}
 	}
+	err = nil
+	return
+}
 
-	eval.block.Payset = append(eval.block.Payset, txibs...)
+func (eval *BlockEvaluator) transactionGroupParallelPart(txgroup []transactions.SignedTxnWithAD, paysetPosition int) (err error) {
+	var cow *roundCowState
+	//var err error
+	var txibs []transactions.SignedTxnInBlock
+	var groupTxBytes int
+	err, txibs, groupTxBytes, cow = eval.transactionGroupCore(txgroup)
+	if err != nil {
+		return err
+	}
+
+	eval.lock.Lock()
+	defer eval.lock.Unlock()
+
+	//debug("wrote payset[%d:%d]", paysetPosition, len(txibs))
+	copy(eval.block.Payset[paysetPosition:], txibs)
+	//eval.block.Payset = append(eval.block.Payset, txibs...)
 	eval.blockTxBytes += groupTxBytes
 	cow.commitToParent()
 
@@ -990,8 +1032,8 @@ func eval(ctx context.Context, l ledgerForEvaluator, blk bookkeeping.Block, vali
 
 	// TODO: parallelize here
 	// TODO: if len(paysetgroups) < 10 { serial } else { parallel }
-	//err = eval.checkPaysetgroupsSerial(ctx, paysetgroups, &txvalidator)
-	err = eval.checkPaysetgroupsParallel(ctx, paysetgroups, &txvalidator)
+	err = eval.checkPaysetgroupsSerial(ctx, paysetgroups, &txvalidator)
+	//err = eval.checkPaysetgroupsParallel(ctx, paysetgroups, &txvalidator, len(blk.Payset))
 	if err != nil {
 		return StateDelta{}, err
 	}
@@ -1019,6 +1061,52 @@ func eval(ctx context.Context, l ledgerForEvaluator, blk bookkeeping.Block, vali
 		err = eval.finalValidation()
 		if err != nil {
 			debug("eval.block.Payset len=%d, blk.Payset len=%d", len(eval.block.Payset), len(blk.Payset))
+			origTxid := make(map[transactions.Txid]int, len(blk.Payset))
+			for _, stxn := range blk.Payset {
+				origTxid[stxn.Txn.ID()] = 1
+			}
+			errct := 0
+			for i, stxn := range eval.block.Payset {
+				if errct >= 10 {
+					break
+				}
+				oid := blk.Payset[i].Txn.ID()
+				nid := stxn.Txn.ID()
+				if oid != nid {
+					ob := protocol.EncodeJSON(blk.Payset[i])
+					nb := protocol.EncodeJSON(stxn)
+					debug("Payset[%d] not equal, orig=%s new=%s", i, string(ob), string(nb))
+					errct++
+				}
+			}
+			for _, stxn := range eval.block.Payset {
+				if errct >= 10 {
+					break
+				}
+				id := stxn.Txn.ID()
+				v, ok := origTxid[id]
+				if !ok {
+					errct++
+					debug("txid %s in new but not orig", id)
+				} else if v != 1 {
+					errct++
+					debug("txid %s seen %d times but wanted 1", id, v)
+				} else {
+					origTxid[id] = v + 1
+				}
+			}
+			for id, idc := range origTxid {
+				if errct >= 10 {
+					break
+				}
+				if idc != 2 {
+					errct++
+					debug("txid %s seen %d times but wanted 2", id, idc)
+				}
+			}
+			if errct == 0 {
+				debug("new payset same stuff different order")
+			}
 			return StateDelta{}, err
 		}
 	}
@@ -1048,12 +1136,15 @@ func (eval *BlockEvaluator) checkPaysetgroupsSerial(ctx context.Context, paysetg
 }
 
 func debug(f string, a ...interface{}) {
-	f = f + "\n"
-	fmt.Fprintf(os.Stderr, f, a...)
+	//f = f + "\n"
+	//fmt.Fprintf(os.Stderr, f, a...)
+	debugLogf.Logf(f, a...)
 }
 
-func (eval *BlockEvaluator) checkPaysetgroupsParallel(ctx context.Context, paysetgroups [][]transactions.SignedTxnWithAD, txvalidator *evalTxValidator) error {
+func (eval *BlockEvaluator) checkPaysetgroupsParallel(ctx context.Context, paysetgroups [][]transactions.SignedTxnWithAD, txvalidator *evalTxValidator, paysetLen int) error {
 	debug("checkPaysetgroupsParallel %d groups", len(paysetgroups))
+	eval.block.Payset = make([]transactions.SignedTxnInBlock, paysetLen)
+	eval.threadsafe = true
 	eval.state.threadsafe = true
 	var wg sync.WaitGroup
 	var dgr depGroupRunner
@@ -1072,11 +1163,13 @@ func (eval *BlockEvaluator) checkPaysetgroupsParallel(ctx context.Context, payse
 		nthreads = nalt
 	}
 	wg.Add(nthreads)
+	var evalThreadSum uint64
 	for i := 0; i < nthreads; i++ {
-		go evalThread(ctx, eval, dgr.todo, dgr.done, &wg)
+		go evalThread(ctx, eval, dgr.todo, dgr.done, &wg, &evalThreadSum)
 	}
 	go func() {
 		wg.Wait()
+		debug("evalThreadSum %d", atomic.LoadUint64(&evalThreadSum))
 		close(dgr.done)
 	}()
 	err := dgr.runDepGroups(paysetgroups)
@@ -1101,9 +1194,12 @@ func validateFailWaiter(txvalidator *evalTxValidator, cf func(), quit chan struc
 	}
 }
 
-func evalThread(ctx context.Context, eval *BlockEvaluator, todo, done chan *paysetDependencyGroup, wg *sync.WaitGroup) {
-	count := 0
-	defer wg.Done()
+func evalThread(ctx context.Context, eval *BlockEvaluator, todo, done chan *paysetDependencyGroup, wg *sync.WaitGroup, countSum *uint64) {
+	var count uint64
+	defer func() {
+		atomic.AddUint64(countSum, count)
+		wg.Done()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -1115,8 +1211,9 @@ func evalThread(ctx context.Context, eval *BlockEvaluator, todo, done chan *pays
 				// closed. done.
 				return
 			}
-			for _, txgroup := range dg.paysetgroups {
-				err := eval.TransactionGroup(txgroup)
+			for tgi, txgroup := range dg.paysetgroups {
+				//err := eval.TransactionGroup(txgroup)
+				err := eval.transactionGroupParallelPart(txgroup, dg.paysetPos[tgi])
 				if err != nil {
 					dg.err = err
 					debug("evalThread err at group[%d] %v", count, err)

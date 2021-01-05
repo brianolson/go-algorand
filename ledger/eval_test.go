@@ -354,9 +354,9 @@ func BenchmarkBlockEvaluatorDiskNoCrypto(b *testing.B) {
 // this variant focuses on benchmarking ledger.go `eval()`, the rest is setup, it runs eval() b.N times.
 func benchmarkBlockEvaluator(b *testing.B, inMem bool, withCrypto bool) {
 	// for txn_dependencies.go
-	// oldDebugLogf := debugLogf
-	// debugLogf = b
-	// defer func() { debugLogf = oldDebugLogf }()
+	oldDebugLogf := debugLogf
+	debugLogf = b
+	defer func() { debugLogf = oldDebugLogf }()
 
 	deadlockDisable := deadlock.Opts.Disable
 	deadlock.Opts.Disable = true

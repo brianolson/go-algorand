@@ -109,6 +109,9 @@ type paysetDependencyGroup struct {
 	// transaction groups
 	paysetgroups [][]transactions.SignedTxnWithAD
 
+	// index of position of group in original block Payset
+	paysetPos []int
+
 	addrs addrSet
 
 	// paysetDependencyGroup that must execute before this one
@@ -128,8 +131,9 @@ type paysetDependencyGroup struct {
 	err error
 }
 
-func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD) {
+func (pdg *paysetDependencyGroup) add(txgroup []transactions.SignedTxnWithAD, pos int) {
 	pdg.paysetgroups = append(pdg.paysetgroups, txgroup)
+	pdg.paysetPos = append(pdg.paysetPos, pos)
 	for _, stxn := range txgroup {
 		pdg.addrs.addTxn(stxn)
 		if stxn.Txn.ConfigAsset != 0 {
@@ -399,7 +403,7 @@ func (dgr *depGroupRunner) nextForProcessing() (next *paysetDependencyGroup) {
 	return
 }
 func (dgr *depGroupRunner) removeFromInProcessing(dg *paysetDependencyGroup) {
-	debugLogf.Logf("done %p %d", dg, dg.id)
+	//debugLogf.Logf("done %p %d", dg, dg.id)
 	for i, v := range dgr.inProcessing {
 		if v == dg {
 			end := len(dgr.inProcessing) - 1
@@ -424,15 +428,19 @@ func (dgr *depGroupRunner) processDone() {
 	}
 }
 */
-
+func (dgr *depGroupRunner) canSend() bool {
+	return (dgr.nextToSend != nil) || (!dgr.dgFifo.isEmpty())
+}
 func (dgr *depGroupRunner) processTodoDone() {
 	if dgr.nextToSend == nil {
 		dgr.nextToSend = dgr.nextForProcessing()
-		id := -1
-		if dgr.nextToSend != nil {
-			id = dgr.nextToSend.id
-			debugLogf.Logf("next to send %p %d", dgr.nextToSend, id)
-		}
+		/*
+			id := -1
+			if dgr.nextToSend != nil {
+				id = dgr.nextToSend.id
+				//debugLogf.Logf("next to send %p %d", dgr.nextToSend, id)
+			}
+		*/
 	}
 	var dg *paysetDependencyGroup
 	if dgr.nextToSend == nil {
@@ -466,7 +474,9 @@ func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnW
 	incount := 0
 	nodep := 0
 	mdep := 0
-	for tgi, txgroup := range paysetgroups {
+	appendcount := 0
+	paysetPos := 0
+	for _, txgroup := range paysetgroups {
 		incount++
 		for dgr.dgFifo.isFull() {
 			dgr.processTodoDone()
@@ -502,30 +512,32 @@ func (dgr *depGroupRunner) runDepGroups(paysetgroups [][]transactions.SignedTxnW
 		if len(dref) == 0 {
 			// depends on nothing. new group.
 			nodep++
-			debugLogf.Logf("tg[%d] new group, no deps", tgi)
+			//debugLogf.Logf("tg[%d] new group, no deps", tgi)
 			npdg := &paysetDependencyGroup{id: dgr.dgi}
 			dgr.dgi++
-			npdg.add(txgroup)
+			npdg.add(txgroup, paysetPos)
 			dgr.dgFifo.put(npdg)
 		} else if len(dref) == 1 && ipc == 0 {
 			// depends on one thing (which is not already in processing) append to that group
-			dref[0].add(txgroup)
+			dref[0].add(txgroup, paysetPos)
+			appendcount++
 		} else {
 			// depends on several things, new group
 			mdep++
 			dependsOn := make([]*paysetDependencyGroup, len(dref))
 			copy(dependsOn, dref)
-			debugLogf.Logf("tg[%d] new group, depends on %#v", tgi, dependsOn)
+			//debugLogf.Logf("tg[%d] new group, depends on %#v", tgi, dependsOn)
 			npdg := &paysetDependencyGroup{dependsOn: dependsOn, id: dgr.dgi}
 			dgr.dgi++
-			npdg.add(txgroup)
+			npdg.add(txgroup, paysetPos)
 			dgr.dgFifo.put(npdg)
 		}
 		noSendCounter++
+		paysetPos += len(txgroup)
 	}
-	debugLogf.Logf("runDepGroups %d groups, %d nodep, %d mdep", incount, nodep, mdep)
+	debugLogf.Logf("runDepGroups %d groups, %d nodep, %d appended, %d mdep", incount, nodep, appendcount, mdep)
 	// finish sending things todo
-	for !dgr.dgFifo.isEmpty() {
+	for dgr.canSend() {
 		dgr.processTodoDone()
 		if dgr.err != nil {
 			return dgr.err
