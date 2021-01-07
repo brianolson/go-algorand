@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,6 +451,7 @@ func benchmarkBlockEvaluator(b *testing.B, inMem bool, withCrypto bool) {
 	// test speed of block validation
 	// This should be the same as the eval line in ledger.go AddBlock()
 	// This is pulled out to isolate eval() time from db ops of AddValidatedBlock()
+	atomic.StoreUint64(&counterLookup, 0)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if withCrypto {
@@ -463,6 +465,8 @@ func benchmarkBlockEvaluator(b *testing.B, inMem bool, withCrypto bool) {
 	abDone := time.Now()
 	abTime := abDone.Sub(avbDone)
 	b.ReportMetric(float64(abTime)/float64(numTxns*b.N), "ns/eval_validate_tx")
+	lookups := atomic.LoadUint64(&counterLookup)
+	b.Logf("%d db lookups for N=%d", lookups, b.N)
 
 	b.StopTimer()
 }

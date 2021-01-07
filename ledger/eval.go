@@ -1032,6 +1032,7 @@ func eval(ctx context.Context, l ledgerForEvaluator, blk bookkeeping.Block, vali
 	if err != nil {
 		return StateDelta{}, err
 	}
+	go prefetchThread2(ctx, eval.state.lookupParent, blk.Payset)
 
 	// Next, transactions
 	paysetgroups, err := blk.DecodePaysetGroups()
@@ -1166,6 +1167,72 @@ func debug(f string, a ...interface{}) {
 	//f = f + "\n"
 	//fmt.Fprintf(os.Stderr, f, a...)
 	debugLogf.Logf(f, a...)
+}
+
+func prefetchThread(ctx context.Context, state *roundCowState, paysetgroups [][]transactions.SignedTxnWithAD) {
+	maybelookup := func(addr basics.Address) {
+		if addr.IsZero() {
+			return
+		}
+		state.lookup(addr)
+	}
+	bail := 10
+	for _, txgroup := range paysetgroups {
+		for _, stxn := range txgroup {
+			state.lookup(stxn.Txn.Sender)
+			maybelookup(stxn.Txn.Receiver)
+			maybelookup(stxn.Txn.CloseRemainderTo)
+			maybelookup(stxn.Txn.AssetSender)
+			maybelookup(stxn.Txn.AssetReceiver)
+			maybelookup(stxn.Txn.AssetCloseTo)
+			maybelookup(stxn.Txn.FreezeAccount)
+			for _, xa := range stxn.Txn.Accounts {
+				maybelookup(xa)
+			}
+		}
+		if bail == 0 {
+			bail = 10
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		} else {
+			bail--
+		}
+	}
+}
+
+func prefetchThread2(ctx context.Context, state roundCowParent, payset []transactions.SignedTxnInBlock) {
+	maybelookup := func(addr basics.Address) {
+		if addr.IsZero() {
+			return
+		}
+		state.lookup(addr)
+	}
+	bail := 10
+	for _, stxn := range payset {
+		state.lookup(stxn.Txn.Sender)
+		maybelookup(stxn.Txn.Receiver)
+		maybelookup(stxn.Txn.CloseRemainderTo)
+		maybelookup(stxn.Txn.AssetSender)
+		maybelookup(stxn.Txn.AssetReceiver)
+		maybelookup(stxn.Txn.AssetCloseTo)
+		maybelookup(stxn.Txn.FreezeAccount)
+		for _, xa := range stxn.Txn.Accounts {
+			maybelookup(xa)
+		}
+		if bail == 0 {
+			bail = 10
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		} else {
+			bail--
+		}
+	}
 }
 
 func (eval *BlockEvaluator) checkPaysetgroupsParallel(ctx context.Context, paysetgroups [][]transactions.SignedTxnWithAD, txvalidator *evalTxValidator, paysetLen int) error {

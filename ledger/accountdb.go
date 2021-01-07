@@ -21,6 +21,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/mattn/go-sqlite3"
@@ -619,11 +620,14 @@ func (qs *accountsDbQueries) lookupCreator(cidx basics.CreatableIndex, ctype bas
 	return
 }
 
+var counterLookup uint64
+
 // lookup looks up for a the account data given it's address. It returns the current database round and the matching
 // account data, if such was found. If no matching account data could be found for the given address, an empty account data would
 // be retrieved.
 func (qs *accountsDbQueries) lookup(addr basics.Address) (data basics.AccountData, dbRound basics.Round, err error) {
 	err = db.Retry(func() error {
+		atomic.AddUint64(&counterLookup, 1)
 		var buf []byte
 		err := qs.lookupStmt.QueryRow(addr[:]).Scan(&dbRound, &buf)
 		if err == nil {
