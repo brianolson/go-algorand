@@ -1,0 +1,193 @@
+syntax = "proto3";
+
+message Transaction {
+  // Header
+
+  bytes sender = 1;
+  uint64 fee = 2;
+  uint64 first_valid = 3;
+  uint64 last_valid = 4;
+  bytes note = 5;
+  string genesis_id = 6;
+  bytes genesis_hash = 7;
+  bytes txgroup = 8; // usually just 'group' but that's a protobuf keyword
+  bytes lease = 9;
+  bytes rekey_to = 10;
+  string type = 11;
+
+  // Payment
+  PaymentTxn payment = 12;
+
+  // AssetTransfer
+  AssetTransferTxn axfr = 13;
+
+  // AssetConfig
+  AssetConfigTxn acfg = 14;
+
+  // AssetFreeze
+  AssetFreezeTxn afrz = 15;
+
+  // ApplicationCall
+  ApplicationCallTxn app = 16;
+
+  // Keyreg
+  KeyregTxn keyreg = 17;
+
+  // CompactCert
+  CompactCertTxn cc = 18;
+}
+
+message PaymentTxn {
+  bytes receiver = 1;
+  uint64 amount = 2;
+  bytes close_remainder_to = 3;
+}
+
+message AssetConfigTxn {
+  uint64 config_asset = 1;
+  AssetParams asset_params = 2;
+}
+
+message AssetTransferTxn {
+  uint64 xfer_asset = 1;
+  uint64 asset_amount = 2;
+  bytes asset_sender = 3;
+  bytes asset_receiver = 4;
+  bytes asset_close_to = 5;
+}
+
+message AssetFreezeTxn {
+  bytes freeze_account = 1;
+  uint64 freeze_asset = 2;
+  bool asset_frozen = 3;
+}
+
+message ApplicationCallTxn {
+  uint64 application_id = 1;
+  uint32 on_completion = 2;
+  repeated bytes application_args = 3;
+  repeated bytes accounts = 4;
+  repeated uint64 foreign_apps = 5;
+  repeated uint64 foreign_assets = 6;
+  StateSchema local_state_schema = 7;
+  StateSchema global_state_schema = 8;
+  bytes approval_program = 9;
+  bytes clear_state_program = 10;
+}
+
+message KeyregTxn {
+  bytes vote_pk = 1;
+  bytes selection_pk = 2;
+  uint64 vote_first = 3;
+  uint64 vote_last = 4;
+  uint64 vote_key_dilution = 5;
+  bool nonparticipation = 6;
+}
+
+message CompactCertTxn {
+  uint64 cert_round = 1;
+  uint64 cert_type = 2;
+  bytes cert = 3;
+}
+
+message CompactCert {
+  bytes sig_commit = 1;
+  uint64 signed_weight = 2;
+  repeated bytes sig_proofs = 3;
+  repeated bytes part_proofs = 4;
+  map<uint64,Reveal> reveals = 5;
+}
+
+message Reveal {
+  // sigslotCommit
+
+  bytes sig = 1;
+  uint64 l = 2;
+
+  // participant
+
+  bytes pk = 3;
+  uint64 weight = 4;
+  uint64 key_dilution = 5;
+}
+
+message ApplyData {
+  uint64 closing_amount  = 1;
+  uint64 asset_closing_amount = 2;
+  uint64 sender_rewards = 3;
+  uint64 receiver_rewards = 4;
+  uint64 close_rewards = 5;
+  EvalData eval = 6;
+
+}
+
+message EvalData {
+  StateDelta global_delta = 1;
+  map<uint64,StateDelta> local_deltas = 2;
+}
+
+message StateDelta {
+  map<string, ValueDelta> deltas = 1;
+}
+
+message ValueDelta {
+  // 1 = set bytes, 2 = set uint, delete = 3
+  int32 action = 1;
+  bytes bv = 2;
+  uint64 uint = 3;
+}
+
+message SignedTxnInBlock {
+  Transaction txn = 1;
+
+  // TODO: inline ApplyData?
+  ApplyData apply_data = 2;
+
+  // txn.genesis_id will be empty, use value from block header
+  bool has_genesis_id = 3;
+
+  // txn.genesis_hash will be empty, use value from block header
+  bool has_genesis_hash = 4;
+
+  bytes sig = 5;
+  MultisigSig msig = 6;
+  LogicSig lsig = 7;
+  bytes auth_addr = 8;
+}
+
+message MultisigSig {
+  uint32 version = 1;
+  uint32 threshold = 2;
+  repeated MultisigSubsig subsigs = 3;
+}
+
+message MultisigSubsig {
+  bytes key = 1;
+  bytes signature = 2;
+}
+
+message LogicSig {
+  bytes logic = 1;
+  bytes sig = 2;
+  MultisigSig msig = 3;
+  repeated bytes args = 4;
+}
+
+message AssetParams {
+  uint64 total = 1;
+  uint32 decimals = 2;
+  bool default_frozen = 3;
+  string unit_name = 4;
+  string asset_name = 5;
+  string url = 6;
+  bytes metadata_hash = 7;
+  bytes manager = 8;
+  bytes reserve = 9;
+  bytes freeze = 10;
+  bytes clawback = 11;
+}
+
+message StateSchema {
+  uint64 num_uint = 1;
+  uint64 num_byte_slice = 2;
+}
