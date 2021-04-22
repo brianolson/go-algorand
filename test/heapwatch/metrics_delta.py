@@ -7,6 +7,8 @@ import gzip
 import logging
 import json
 import os
+import re
+import statistics
 import sys
 import time
 
@@ -16,6 +18,21 @@ def num(x):
     if '.' in x:
         return float(x)
     return int(x)
+
+metric_line_re = re.compile(r'(\S+\{[^}]*\})\s+(.*)')
+
+def test_metric_line_re():
+    testlines = (
+        ('algod_network_connections_dropped_total{reason="write err"} 1', 1),
+        #('algod_network_sent_bytes_MS 274992', 274992), # handled by split
+    )
+    for line, n in testlines:
+        try:
+            m = metric_line_re.match(line)
+            assert int(m.group(2)) == n
+        except:
+            logger.error('failed on line %r', line, exc_info=True)
+            raise
 
 def parse_metrics(fin):
     out = dict()
@@ -27,8 +44,12 @@ def parse_metrics(fin):
             continue
         if line[0] == '#':
             continue
-        ab = line.split()
-        out[ab[0]] = num(ab[1])
+        m = metric_line_re.match(line)
+        if m:
+            out[m.group(1)] = num(m.group(2))
+        else:
+            ab = line.split()
+            out[ab[0]] = num(ab[1])
     return out
 
 # return b-a
@@ -55,6 +76,7 @@ def sopen(path, mode):
     return open(path, mode)
 
 def main():
+    test_metric_line_re()
     ap = argparse.ArgumentParser()
     ap.add_argument('metrics_files', nargs='*')
     ap.add_argument('--deltas', default=None, help='path to write csv deltas')
@@ -82,6 +104,9 @@ def main():
     prevbi = None
 
     deltas = []
+    txBpsList = []
+    rxBpsList = []
+    tpsList = []
     for path in sorted(args.metrics_files):
         with open(path, 'rt') as fin:
             cur = parse_metrics(fin)
@@ -108,6 +133,9 @@ def main():
             if writer:
                 txBytesPerSec = d.get('algod_network_sent_bytes_total{}',0) / dt
                 rxBytesPerSec = d.get('algod_network_received_bytes_total{}',0) /dt
+                txBpsList.append(txBytesPerSec)
+                rxBpsList.append(rxBytesPerSec)
+                tpsList.append(tps)
                 writer.writerow((
                     time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(curtime)),
                     txBytesPerSec,
@@ -119,6 +147,12 @@ def main():
         prevPath = path
         prevtime = curtime
         prevbi = bi
+    if writer and txBpsList:
+        writer.writerow([])
+        writer.writerow(['min', min(txBpsList), min(rxBpsList), min(tpsList)])
+        writer.writerow(['avg', statistics.mean(txBpsList), statistics.mean(rxBpsList), statistics.mean(tpsList)])
+        writer.writerow(['max', max(txBpsList), max(rxBpsList), max(tpsList)])
+        writer.writerow(['std', statistics.pstdev(txBpsList), statistics.pstdev(rxBpsList), statistics.pstdev(tpsList)])
     if reportf:
         reportf.close()
     if deltas and args.deltas:
