@@ -7,6 +7,7 @@ import gzip
 import logging
 import json
 import os
+import statistics
 import sys
 import time
 
@@ -82,6 +83,9 @@ def main():
     prevbi = None
 
     deltas = []
+    txBpsList = []
+    rxBpsList = []
+    tpsList = []
     for path in sorted(args.metrics_files):
         with open(path, 'rt') as fin:
             cur = parse_metrics(fin)
@@ -108,6 +112,9 @@ def main():
             if writer:
                 txBytesPerSec = d.get('algod_network_sent_bytes_total{}',0) / dt
                 rxBytesPerSec = d.get('algod_network_received_bytes_total{}',0) /dt
+                txBpsList.append(txBytesPerSec)
+                rxBpsList.append(rxBytesPerSec)
+                tpsList.append(tps)
                 writer.writerow((
                     time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(curtime)),
                     txBytesPerSec,
@@ -119,6 +126,12 @@ def main():
         prevPath = path
         prevtime = curtime
         prevbi = bi
+    if writer and txBpsList:
+        writer.writerow([])
+        writer.writerow(['min', min(txBpsList), min(rxBpsList), min(tpsList)])
+        writer.writerow(['avg', statistics.mean(txBpsList), statistics.mean(rxBpsList), statistics.mean(tpsList)])
+        writer.writerow(['max', max(txBpsList), max(rxBpsList), max(tpsList)])
+        writer.writerow(['std', statistics.pstdev(txBpsList), statistics.pstdev(rxBpsList), statistics.pstdev(tpsList)])
     if reportf:
         reportf.close()
     if deltas and args.deltas:
