@@ -3,10 +3,12 @@
 import argparse
 import contextlib
 import csv
+import glob
 import gzip
 import logging
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -18,6 +20,21 @@ def num(x):
         return float(x)
     return int(x)
 
+metric_line_re = re.compile(r'(\S+\{[^}]*\})\s+(.*)')
+
+def test_metric_line_re():
+    testlines = (
+        ('algod_network_connections_dropped_total{reason="write err"} 1', 1),
+        #('algod_network_sent_bytes_MS 274992', 274992), # handled by split
+    )
+    for line, n in testlines:
+        try:
+            m = metric_line_re.match(line)
+            assert int(m.group(2)) == n
+        except:
+            logger.error('failed on line %r', line, exc_info=True)
+            raise
+
 def parse_metrics(fin):
     out = dict()
     for line in fin:
@@ -28,8 +45,12 @@ def parse_metrics(fin):
             continue
         if line[0] == '#':
             continue
-        ab = line.split()
-        out[ab[0]] = num(ab[1])
+        m = metric_line_re.match(line)
+        if m:
+            out[m.group(1)] = num(m.group(2))
+        else:
+            ab = line.split()
+            out[ab[0]] = num(ab[1])
     return out
 
 # return b-a
@@ -55,28 +76,20 @@ def sopen(path, mode):
         return contextlib.closing(gzip.open(path, mode))
     return open(path, mode)
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('metrics_files', nargs='*')
-    ap.add_argument('--deltas', default=None, help='path to write csv deltas')
-    ap.add_argument('--report', default=None, help='path to write csv report')
-    ap.add_argument('--verbose', default=False, action='store_true')
-    args = ap.parse_args()
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.INFO)
-
-    reportf = None
-    writer = None
-    if args.report:
-        if args.report == '-':
-            writer = csv.writer(sys.stdout)
+def find_metrics(dirpath):
+    paths = glob.glob(os.path.join(dirpath, 'relay*metrics'))
+    byrelay = {}
+    for p in paths:
+        parts = p.split('.')
+        byr = byrelay.get(parts[0])
+        if byr is None:
+            byr = [p]
+            byrelay[parts[0]] = byr
         else:
-            reportf = open(args.report, 'wt')
-            writer = csv.writer(reportf)
-        writer.writerow(('when', 'tx bytes/s', 'rx bytes/s','TPS', 's/block'))
+            byr.append(p)
+    return byrelay
+
+def process_for_relay(paths, writer):
     prev = None
     prevtime = None
     prevPath = None
@@ -86,7 +99,7 @@ def main():
     txBpsList = []
     rxBpsList = []
     tpsList = []
-    for path in sorted(args.metrics_files):
+    for path in sorted(paths):
         with open(path, 'rt') as fin:
             cur = parse_metrics(fin)
         bijsonpath = path.replace('.metrics', '.blockinfo.json')
@@ -126,27 +139,94 @@ def main():
         prevPath = path
         prevtime = curtime
         prevbi = bi
+    avrow = ['avg', statistics.mean(txBpsList), statistics.mean(rxBpsList), statistics.mean(tpsList)]
     if writer and txBpsList:
         writer.writerow([])
         writer.writerow(['min', min(txBpsList), min(rxBpsList), min(tpsList)])
-        writer.writerow(['avg', statistics.mean(txBpsList), statistics.mean(rxBpsList), statistics.mean(tpsList)])
+        writer.writerow(avrow)
         writer.writerow(['max', max(txBpsList), max(rxBpsList), max(tpsList)])
         writer.writerow(['std', statistics.pstdev(txBpsList), statistics.pstdev(rxBpsList), statistics.pstdev(tpsList)])
-    if reportf:
-        reportf.close()
-    if deltas and args.deltas:
-        keys = set()
+    return deltas, avrow
+
+def deltas_report(deltas, outpath):
+    keys = set()
+    for ct, d in deltas:
+        keys.update(set(d.keys()))
+    keys = sorted(keys)
+    with sopen(outpath, 'wt') as fout:
+        writer = csv.writer(fout)
+        writer.writerow(['when'] + keys)
         for ct, d in deltas:
-            keys.update(set(d.keys()))
-        keys = sorted(keys)
-        with sopen(args.deltas, 'wt') as fout:
-            writer = csv.writer(fout)
-            writer.writerow(['when'] + keys)
-            for ct, d in deltas:
-                row = [time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ct))]
-                for k in keys:
-                    row.append(d.get(k, None))
+            row = [time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ct))]
+            for k in keys:
+                row.append(d.get(k, None))
+            writer.writerow(row)
+
+def main():
+    test_metric_line_re()
+    ap = argparse.ArgumentParser()
+    ap.add_argument('metrics_files', nargs='*')
+    ap.add_argument('--logdir', default=None, help='dir to find *.metrics')
+    ap.add_argument('--deltas', default=None, help='path to write csv deltas')
+    ap.add_argument('--report', default=None, help='path to write csv report')
+    ap.add_argument('--verbose', default=False, action='store_true')
+    args = ap.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    if args.metrics_files:
+        reportf = None
+        writer = None
+        if args.report:
+            if args.report == '-':
+                writer = csv.writer(sys.stdout)
+            else:
+                reportf = open(args.report, 'wt')
+                writer = csv.writer(reportf)
+            writer.writerow(('when', 'tx bytes/s', 'rx bytes/s','TPS', 's/block'))
+        deltas, avg = process_for_relay(args.metrics_files, writer)
+        if reportf:
+            reportf.close()
+        if deltas and args.deltas:
+            deltas_report(deltas, args.deltas)
+    elif args.logdir:
+        byrelay = find_metrics(args.logdir)
+        averages = []
+        for relayname, paths in byrelay.items():
+            relayname = os.path.basename(relayname)
+            reportpath = os.path.join(args.logdir, relayname + '.csv')
+            reportf = open(reportpath, 'wt')
+            writer = csv.writer(reportf)
+            writer.writerow(('when', 'tx bytes/s', 'rx bytes/s','TPS', 's/block'))
+            deltas, avg = process_for_relay(paths, writer)
+            avg[0] = relayname
+            averages.append(avg)
+            reportf.close()
+            if deltas:
+                deltas_report(deltas, os.path.join(args.logdir, relayname + '_deltas.csv'))
+        avpath = os.path.join(args.logdir, 'avg.csv')
+        avsum = []
+        avcount = 0
+        with open(avpath, 'wt') as avout:
+            writer = csv.writer(avout)
+            writer.writerow(('relay', 'tx bytes/s', 'rx bytes/s','TPS', 's/block'))
+            for row in averages:
                 writer.writerow(row)
+                for i, v in enumerate(row[1:]):
+                    while len(avsum) <= i:
+                        avsum.append(0)
+                    avsum[i] += v
+                avcount += 1
+            writer.writerow(['all'] + [v/avcount for v in avsum])
+
+
+
+    else:
+        return 1
+
     return 0
 
 if __name__ == '__main__':
