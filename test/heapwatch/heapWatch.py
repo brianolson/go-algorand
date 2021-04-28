@@ -172,7 +172,7 @@ class GetCall:
         self.fails = 0
 
     def call(self):
-        self.f(*self.args, **self.emptyKwargs)
+        self.f(*self.args, **self.kwargs)
 
 class watcher:
     def __init__(self, args):
