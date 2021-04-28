@@ -125,9 +125,12 @@ def process_for_relay(paths, writer):
             if writer:
                 txBytesPerSec = d.get('algod_network_sent_bytes_total{}',0) / dt
                 rxBytesPerSec = d.get('algod_network_received_bytes_total{}',0) /dt
-                txBpsList.append(txBytesPerSec)
-                rxBpsList.append(rxBytesPerSec)
-                tpsList.append(tps)
+                if txBytesPerSec is not None:
+                    txBpsList.append(txBytesPerSec)
+                if rxBytesPerSec is not None:
+                    rxBpsList.append(rxBytesPerSec)
+                if tps is not None:
+                    tpsList.append(tps)
                 writer.writerow((
                     time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(curtime)),
                     txBytesPerSec,

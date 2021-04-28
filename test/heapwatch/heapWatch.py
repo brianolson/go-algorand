@@ -10,9 +10,11 @@ import argparse
 import json
 import logging
 import os
+import queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -66,8 +68,9 @@ signal.signal(signal.SIGINT, do_graceful_stop)
 
 
 class algodDir:
-    def __init__(self, path):
+    def __init__(self, path, args):
         self.path = path
+        self.args = args
         self.nick = os.path.basename(self.path)
         net, token, admin_token = read_algod_dir(self.path)
         self.net = net
@@ -76,6 +79,7 @@ class algodDir:
         self.headers = {}
         self._pid = None
         self._algod = None
+        self.snapshot = None
 
     def pid(self):
         if self._pid is None:
@@ -107,7 +111,12 @@ class algodDir:
         return outpath
 
     def get_heap_snapshot(self, snapshot_name=None, outdir=None):
-        return self.get_pprof_snapshot('heap', snapshot_name, outdir)
+        snappath = self.get_pprof_snapshot('heap', snapshot_name, outdir)
+        self.snapshot = snappath
+        rss, vsz = self.psHeap()
+        if rss and vsz:
+            with open(os.path.join(self.args.out, self.nick + '.heap.csv'), 'at') as fout:
+                fout.write('{},{},{},{}\n'.format(snapshot_name,snapshot_isotime,rss, vsz))
 
     def get_goroutine_snapshot(self, snapshot_name=None, outdir=None):
         return self.get_pprof_snapshot('goroutine', snapshot_name, outdir)
@@ -152,53 +161,88 @@ class algodDir:
         except:
             return None, None
 
+class GetCall:
+    emptyArgs = tuple()
+    emptyKwargs = dict()
+
+    def __init__(self, f, *args, **kwargs):
+        self.f = f
+        self.args = list(args)
+        self.kwargs = dict(kwargs)
+        self.fails = 0
+
+    def call(self):
+        self.f(*self.args, **self.emptyKwargs)
+
 class watcher:
     def __init__(self, args):
         self.args = args
         self.prevsnapshots = {}
         self.they = []
+        self.callQueue = queue.Queue()
+        self.workerThreads = []
         for path in args.data_dirs:
             if not os.path.isdir(path):
                 continue
             if os.path.exists(os.path.join(path, 'algod.net')):
                 try:
-                    ad = algodDir(path)
+                    ad = algodDir(path, self.args)
                     self.they.append(ad)
                 except:
                     logger.error('bad algod: %r', path, exc_info=True)
             else:
                 logger.debug('not a datadir: %r', path)
         logger.debug('data dirs: %r', self.they)
+        self.startWorker()
+        self.startWorker()
+
+    def startWorker(self):
+        t = threading.Thread(target=self.worker, daemon=True)
+        self.workerThreads.append(t)
+        t.start()
+
+    def worker(self):
+        while True:
+            op = self.callQueue.get()
+            try:
+                op.call()
+            except:
+                op.fails += 1
+                if op.fails > 5:
+                    logger.error('could not run %s %r %r, %d fails', op.f, op.args, op.kwargs, op.fails, exc_info=True)
+                else:
+                    self.callQueue.put(op)
+            self.callQueue.task_done()
 
     def do_snap(self, now):
         snapshot_name = time.strftime('%Y%m%d_%H%M%S', time.gmtime(now))
         snapshot_isotime = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(now))
         logger.debug('begin snapshot %s', snapshot_name)
-        psheaps = {}
-        newsnapshots = {}
+        #psheaps = {}
+        #newsnapshots = {}
         if self.args.heaps:
             for ad in self.they:
-                snappath = ad.get_heap_snapshot(snapshot_name, outdir=self.args.out)
-                newsnapshots[ad.path] = snappath
-                rss, vsz = ad.psHeap()
-                if rss and vsz:
-                    psheaps[ad.nick] = (rss, vsz)
-            for nick, rssvsz in psheaps.items():
-                rss, vsz = rssvsz
-                with open(os.path.join(self.args.out, nick + '.heap.csv'), 'at') as fout:
-                    fout.write('{},{},{},{}\n'.format(snapshot_name,snapshot_isotime,rss, vsz))
+                self.callQueue.put(GetCall(ad.get_heap_snapshot, snapshot_name, outdir=self.args.out))
         if self.args.goroutine:
             for ad in self.they:
-                ad.get_goroutine_snapshot(snapshot_name, outdir=self.args.out)
+                self.callQueue.put(GetCall(ad.get_goroutine_snapshot, snapshot_name, outdir=self.args.out))
         if self.args.metrics:
             for ad in self.they:
-                ad.get_metrics(snapshot_name, outdir=self.args.out)
+                self.callQueue.put(GetCall(ad.get_metrics, snapshot_name, outdir=self.args.out))
         if self.args.blockinfo:
             for ad in self.they:
-                ad.get_blockinfo(snapshot_name, outdir=self.args.out)
+                self.callQueue.put(GetCall(ad.get_blockinfo, snapshot_name, outdir=self.args.out))
+        self.callQueue.join()
         logger.debug('snapped, processing...')
         # make absolute and differential plots
-        for path, snappath in newsnapshots.items():
+        newsnapshots = {}
+        for ad in self.they:
+            path = ad.path
+            if not ad.snapshot:
+                continue
+            snappath = ad.snapshot
+            newsnapshots[path] = snappath
+        #for path, snappath in newsnapshots.items():
             subprocess.call(['go', 'tool', 'pprof', '-sample_index=inuse_space', '-svg', '-output', snappath + '.inuse.svg', snappath])
             subprocess.call(['go', 'tool', 'pprof', '-sample_index=alloc_space', '-svg', '-output', snappath + '.alloc.svg', snappath])
             prev = self.prevsnapshots.get(path)
