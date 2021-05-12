@@ -1,0 +1,115 @@
+{
+  "network": {
+    "wallets": 10,
+    "nodes": 3
+  },
+  "instances": {
+    "relays": {
+      "config": "./configs/relay.json",
+      "type": "m5ad.xlarge",
+      "count": 2
+    },
+    "participatingNodes": {
+      "config": "./configs/node.json",
+      "type": "m5ad.xlarge",
+      "count": 3
+    },
+    "nonParticipatingNodes": {
+      "config": "./configs/nonPartNode.json",
+      "type": "m5ad.xlarge",
+      "count": 2
+    }
+  },
+  "groups": [
+    {
+      "name": "us-r",
+      "percent": {
+        "relays": 1,
+        "participatingNodes": 0,
+        "nonParticipatingNodes": 0
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "us-n",
+      "percent": {
+        "relays": 0,
+        "participatingNodes": 1,
+        "nonParticipatingNodes": 1
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "eu-r",
+      "percent": {
+        "relays": 1,
+        "participatingNodes": 0,
+        "nonParticipatingNodes": 0
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "eu-n",
+      "percent": {
+        "relays": 0,
+        "participatingNodes": 1,
+        "nonParticipatingNodes": 1
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "ap-r",
+      "percent": {
+        "relays": 0,
+        "participatingNodes": 0,
+        "nonParticipatingNodes": 0
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "ap-n",
+      "percent": {
+        "relays": 0,
+        "participatingNodes": 1,
+        "nonParticipatingNodes": 0
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "af-r",
+      "percent": {
+        "relays": 0,
+        "participatingNodes": 0,
+        "nonParticipatingNodes": 0
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "af-n",
+      "percent": {
+        "relays": 0,
+        "participatingNodes": 0,
+        "nonParticipatingNodes": 0
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "au-r",
+      "percent": {
+        "relays": 0,
+        "participatingNodes": 0,
+        "nonParticipatingNodes": 0
+      },
+      "region": "us-east-2"
+    },
+    {
+      "name": "au-n",
+      "percent": {
+        "relays": 0,
+        "participatingNodes": 0,
+        "nonParticipatingNodes": 0
+      },
+      "region": "us-east-2"
+    }
+  ]
+}
