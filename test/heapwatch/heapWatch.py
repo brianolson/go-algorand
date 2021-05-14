@@ -66,13 +66,14 @@ signal.signal(signal.SIGINT, do_graceful_stop)
 
 
 class algodDir:
-    def __init__(self, path):
+    def __init__(self, path, net=None, token=None, admin_token=None):
         self.path = path
         self.nick = os.path.basename(self.path)
-        net, token, admin_token = read_algod_dir(self.path)
         self.net = net
         self.token = token
         self.admin_token = admin_token
+        if net is None:
+            net, token, admin_token = read_algod_dir(self.path)
         self.headers = {}
         self._pid = None
         self._algod = None
@@ -157,6 +158,16 @@ class watcher:
         self.args = args
         self.prevsnapshots = {}
         self.they = []
+        if not args.data_dirs and os.path.exists('terraform-inventory.host'):
+            import configparser
+            cp = configparser.ConfigParser(allow_no_value=True)
+            cp.read('terraform-inventory.host')
+            for net in cp['role_relay'].keys():
+                try:
+                    ad = algodDir(net, net=net)
+                    self.they.append(ad)
+                except:
+                    logger.error('bad algod: %r', path, exc_info=True)
         for path in args.data_dirs:
             if not os.path.isdir(path):
                 continue
