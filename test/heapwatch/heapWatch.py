@@ -158,13 +158,14 @@ class watcher:
         self.args = args
         self.prevsnapshots = {}
         self.they = []
-        if not args.data_dirs and os.path.exists('terraform-inventory.host'):
+        if not args.data_dirs and os.path.exists(args.tf_inventory):
             import configparser
             cp = configparser.ConfigParser(allow_no_value=True)
-            cp.read('terraform-inventory.host')
+            cp.read(args.tf_inventory)
             for net in cp['role_relay'].keys():
+                net = net + ':8580'
                 try:
-                    ad = algodDir(net, net=net)
+                    ad = algodDir(net, net=net, token=args.token, admin_token=args.admin_token)
                     self.they.append(ad)
                 except:
                     logger.error('bad algod: %r', path, exc_info=True)
@@ -226,6 +227,9 @@ def main():
     ap.add_argument('--metrics', default=False, action='store_true', help='also capture /metrics counts')
     ap.add_argument('--blockinfo', default=False, action='store_true', help='also capture block header info')
     ap.add_argument('--period', default=None, help='seconds between automatically capturing')
+    ap.add_argument('--tf-inventory', default='terraform-inventory.host', help='terraform inventory file to use if no data_dirs specified')
+    ap.add_argument('--token', default='', help='default algod api token to use')
+    ap.add_argument('--admin-token', default='', help='default algod admin-api token to use')
     ap.add_argument('-o', '--out', default=None, help='directory to write to')
     ap.add_argument('--verbose', default=False, action='store_true')
     args = ap.parse_args()
