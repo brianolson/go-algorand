@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/util/metrics"
 	"github.com/algorand/go-algorand/util/timers"
 )
 
@@ -75,6 +76,10 @@ type pendingTransactionGroupsSnapshot struct {
 	latestLocallyOriginatedGroupCounter uint64
 }
 
+// TODO: delete/disable temporary hackish bandwidth counters
+var tx_bf *metrics.Counter = metrics.NewCounter("algod_network_sent_bytes_tx_bf", "txnsync bloom filter bytes")
+var tx_tx *metrics.Counter = metrics.NewCounter("algod_network_sent_bytes_tx_tx", "txnsync txn bytes")
+
 func (s *syncState) sendMessageLoop(currentTime time.Duration, deadline timers.DeadlineMonitor, peers []*Peer) {
 	if len(peers) == 0 {
 		// no peers - no messages that need to be sent.
@@ -97,6 +102,10 @@ func (s *syncState) sendMessageLoop(currentTime time.Duration, deadline timers.D
 		}
 		profAssembleMessage.end()
 		encodedMessage := msgCallback.messageData.message.MarshalMsg([]byte{})
+		// TODO: delete/disable this expensive logging of size of inner parts of the message
+		tx_bf.AddUint64(uint64(len(msgCallback.messageData.message.TxnBloomFilter.BloomFilter)), nil)
+		tx_tx.AddUint64(uint64(len(msgCallback.messageData.message.TransactionGroups.MarshalMsg(nil))), nil)
+
 		msgCallback.messageData.encodedMessageSize = len(encodedMessage)
 		profSendMessage.start()
 		s.node.SendPeerMessage(peer.networkPeer, encodedMessage, msgCallback.asyncMessageSent)

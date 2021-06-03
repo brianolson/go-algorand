@@ -20,6 +20,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/algorand/go-algorand/util/metrics"
+
 	"github.com/algorand/go-deadlock"
 )
 
@@ -96,6 +98,10 @@ func (imq *incomingMessageQueue) clear(m incomingMessage) {
 	}
 }
 
+// TODO: delete/disable temporary hackish bandwidth counters
+var rx_bf *metrics.Counter = metrics.NewCounter("algod_network_received_bytes_tx_bf", "txnsync bloom filter bytes")
+var rx_tx *metrics.Counter = metrics.NewCounter("algod_network_received_bytes_tx_tx", "txnsync txn bytes")
+
 // incomingMessageHandler
 // note - this message is called by the network go-routine dispatch pool, and is not syncronized with the rest of the transaction syncronizer
 func (s *syncState) asyncIncomingMessageHandler(networkPeer interface{}, peer *Peer, message []byte, sequenceNumber uint64) error {
@@ -106,6 +112,11 @@ func (s *syncState) asyncIncomingMessageHandler(networkPeer interface{}, peer *P
 		s.log.Infof("received unparsable transaction sync message from peer. disconnecting from peer.")
 		return err
 	}
+
+	// TODO: delete/disable this expensive logging of size of inner parts of the message
+	rx_bf.AddUint64(uint64(len(txMsg.TxnBloomFilter.BloomFilter)), nil)
+	rx_tx.AddUint64(uint64(len(txMsg.TransactionGroups.MarshalMsg(nil))), nil)
+
 	if txMsg.Version != txnBlockMessageVersion {
 		// we receive a message from a version that we don't support, disconnect.
 		s.log.Infof("received unsupported transaction sync message version from peer. disconnecting from peer.")
